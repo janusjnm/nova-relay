@@ -25,11 +25,17 @@ nova-relay brief-template > /tmp/nova-<short>.md
 ## 2. 派发
 
 ```bash
-nova-relay dispatch --project <PD|NM> --owner <OWNER> /tmp/nova-a.md /tmp/nova-b.md
+nova-relay dispatch --project <PD|NM> --owner <OWNER> --key <KEY> --json /tmp/nova-a.md /tmp/nova-b.md
 ```
 
-- 输出 `batch b-…` 与每个任务的执行者。若报 `invalid brief` 或路由错误（此时没有批次），修正后重试。
-- 若输出了 `batch b-…` 又有 `submit error: …`：批次已经登记，**不要重新 dispatch**（会重复干活）。主机可能其实已经收到任务；nova-relay 会确认，没送达的任务在批次里显示为 `FAIL submit`，批次结束时照常唤醒你。把错误原样告诉用户，然后结束本轮。
+- `--key`：每个批次请求选一个新的、唯一的键（例如 `<OWNER>-<日期>-<短名>`），**写下来**。同一个键 + 同样的任务书 = 同一个批次：重试只会续交，绝不会建第二个批次。
+- 输出 JSON：`batch`、每个任务的 `outcome.tasks[<id>].delivery`。若报 `invalid brief` 或路由错误（此时没有批次），修正后重试。
+- 按退出码处理：
+  - `0`：全部送达。
+  - `75`：有任务送达**未知**（例如 ssh 超时）。可以用**完全相同的命令（同一个 `--key`、同样的任务书）**再试一次；仍是 75 就把情况告诉用户并结束本轮——coordinator 会继续对账，批次结束时照常唤醒你。
+  - `1`：有任务确认没送达（`not_delivered` / `FAIL submit`）。不要自动重派，告诉用户。
+  - `4`：这个键已经用于别的任务书。什么都没派发；换一个新键（不要改用旧任务书去“凑”）。
+- **不要不带 `--key` 重试**，也不要换一个键重派同样的任务书——那会重复干活。
 - 告诉用户：批次 ID、任务数、各自执行者、"完成后我会被唤醒并汇报"。然后结束本轮。
 
 ## 3. 被唤醒后

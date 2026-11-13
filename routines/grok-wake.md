@@ -45,7 +45,8 @@ webhook payload 只有：
       - 对 failed 任务：不要自动重派。说明原因，询问用户是否调整任务书后重新 dispatch。
       - 若某任务 verdict 是 FAIL integrity:.git/…：执行者改动了仓库共享的 .git/config、.git/hooks 或 .git/info。明确告诉用户：检查这些之前不要在该仓库运行任何 git 命令；你自己也不要运行。
       - 若 verdict 是 FAIL setup:…：验收前的依赖安装（acceptance_setup，如 npm ci）失败，通常是网络/registry/工具链问题，或任务改坏了依赖清单。不是执行者能重试修好的测试失败；把最后一行原样告诉用户，请用户检查网络或依赖后再决定是否重新 dispatch。
-      - 若 verdict 是 FAIL submit：任务书没有送达执行主机（已确认，主机不会再创建它），执行者没有动过代码。告诉用户；经用户同意后可以重新 dispatch 这份任务书。
+      - 若 verdict 是 FAIL submit：任务书没有送达执行主机（已确认，主机不会再创建它），执行者没有动过代码。告诉用户；经用户同意后可以重新 dispatch 这份任务书（用一个**新的** --key；旧键只会返回这个已结束的批次）。
+      - 若任务是 abandoned（verdict ABANDONED）：运维员放弃了那台连不上的主机。**不要说任务已停止**——那台主机若其实在运行，任务可能仍在后台执行并改动分支 nova/<task>；之后它的上报不会再计入这个批次。告诉用户这一点，不要自动重派。
       - 若 verdict 是 FAIL integrity:refs：验收命令运行期间任务分支被移动（测试代码改了共享仓库），按篡改处理。
       - 若 verdict 是 FAIL integrity:head / integrity:history / harness:… / tests-removed / tests-deleted / tests-skipped / symlink-…：这是篡改验收（移走分支、改写历史、改测试框架或验收脚本、删/跳过测试、符号链接），nova-relay 不会自动重试。如实告诉用户是哪个文件，不要替执行者"修好"后宣称通过。
 
