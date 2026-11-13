@@ -1,0 +1,7 @@
+[Unit]
+Description=nova-relay watchdog (VPS: tick + resume box tasks over Tailscale ssh, heartbeat fallback)
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/nova-relay watchdog

@@ -1,77 +1,73 @@
 #!/usr/bin/env bash
-# install.sh — 安装 grokbot-and-pi 工具脚本
+# install.sh — install nova-relay from this checkout. Safe and idempotent:
+#   * copies files only from this local checkout (never downloads or pipes remote code)
+#   * installs each version side by side and switches a `current` symlink atomically, so
+#     running workers keep using the version they started with
+#   * never deletes anything and never overwrites an existing config or secrets file
 #
-# 检查 Node >= 22 和 pi 命令，将 bin/ 复制到 ${PI_TASK_HOME:-$HOME/tools/pi-call}
-# 脚本绝不执行任何删除操作。
-
+# usage: ./install.sh [--systemd box|vps]
 set -euo pipefail
 
-echo "==> 检查系统依赖环境..."
+ROLE=""
+if [ "${1:-}" = "--systemd" ]; then ROLE="${2:-}"; fi
+case "$ROLE" in ""|box|vps) ;; *) echo "usage: ./install.sh [--systemd box|vps]" >&2; exit 2 ;; esac
 
-# 1. 检查 node
-if ! command -v node >/dev/null 2>&1; then
-  echo "错误：未检测到 'node' 命令。" >&2
-  echo "grokbot-and-pi 需要 Node.js >= 22，请先安装 Node.js（https://nodejs.org/）。" >&2
-  exit 1
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PREFIX="${NOVA_RELAY_PREFIX:-$HOME/.local/share/nova-relay}"
+BIN_DIR="${NOVA_RELAY_BIN_DIR:-$HOME/.local/bin}"
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nova-relay"
+
+echo "==> checking prerequisites"
+command -v node >/dev/null 2>&1 || { echo "error: node not found (need Node.js >= 22)" >&2; exit 1; }
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
+[ "$NODE_MAJOR" -ge 22 ] || { echo "error: Node.js $(node -v) found, need >= 22" >&2; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "error: git not found (need >= 2.38)" >&2; exit 1; }
+GIT_VER=$(git --version | awk '{print $3}')
+if [ "$(printf '%s\n2.38\n' "$GIT_VER" | sort -V | head -1)" != "2.38" ]; then
+  echo "error: git $GIT_VER found, need >= 2.38 (merge-tree --write-tree)" >&2; exit 1
+fi
+echo "  ok node $(node -v), git $GIT_VER"
+
+VERSION=$(node -p "require('$SRC/package.json').version")
+DEST="$PREFIX/versions/$VERSION"
+echo "==> installing nova-relay $VERSION to $DEST"
+mkdir -p "$DEST" "$BIN_DIR" "$CONF_DIR"
+for d in bin lib extensions systemd config templates routines skills; do
+  [ -d "$SRC/$d" ] && cp -R "$SRC/$d" "$DEST/"
+done
+cp "$SRC/package.json" "$SRC/LICENSE" "$SRC/NOTICE" "$DEST/"
+chmod +x "$DEST/bin/nova-relay" "$DEST/bin/nova-relay.mjs" "$DEST/bin/nova-guard-hook.mjs"
+
+# Atomic switch: new symlink next to the old one, then rename over it.
+ln -sfn "$DEST" "$PREFIX/current.tmp.$$"
+mv -T "$PREFIX/current.tmp.$$" "$PREFIX/current"
+ln -sfn "$PREFIX/current/bin/nova-relay" "$BIN_DIR/nova-relay"
+echo "  ok $BIN_DIR/nova-relay -> $PREFIX/current/bin/nova-relay"
+
+if [ ! -e "$CONF_DIR/config.json" ]; then
+  install -m 600 "$SRC/config/nova-relay.example.json" "$CONF_DIR/config.json"
+  echo "  ok created $CONF_DIR/config.json from the example — edit it (self, hosts, projects)"
+else
+  echo "  ok kept existing $CONF_DIR/config.json"
+fi
+if [ ! -e "$CONF_DIR/secrets.env" ]; then
+  install -m 600 /dev/null "$CONF_DIR/secrets.env"
+  echo "  ok created empty $CONF_DIR/secrets.env (0600) — put KEY=VALUE secrets here, never in the repo"
 fi
 
-NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "错误：当前 Node.js 版本为 $(node -v)，但需要 Node.js >= 22。" >&2
-  echo "请升级 Node.js 后重试（例如使用 nvm、fnm 或包管理器）。" >&2
-  exit 1
-fi
-echo "  ✓ Node.js $(node -v) 符合要求"
-
-# 2. 检查 pi
-if ! command -v pi >/dev/null 2>&1; then
-  echo "错误：未在 PATH 中找到 'pi' 命令。" >&2
-  echo "请先安装 Pi coding agent（参见 https://pi.dev 或执行 npm i -g @earendil-works/pi-coding-agent）。" >&2
-  exit 1
-fi
-echo "  ✓ 检测到 pi 命令: $(command -v pi)"
-
-# 3. 复制 bin/ 脚本到目标目录
-TARGET_DIR="${PI_TASK_HOME:-$HOME/tools/pi-call}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-echo "==> 安装脚本至: $TARGET_DIR"
-mkdir -p "$TARGET_DIR"
-
-# 复制文件（不删除已有文件）
-cp -p "$SCRIPT_DIR/bin/"* "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/pi-task" "$TARGET_DIR/pi-task.mjs" "$TARGET_DIR/pi-call.mjs" "$TARGET_DIR/pi-run"
-
-# 复制 extensions/ 扩展到目标目录
-if [ -d "$SCRIPT_DIR/extensions" ]; then
-  mkdir -p "$TARGET_DIR/extensions"
-  cp -p "$SCRIPT_DIR/extensions/"* "$TARGET_DIR/extensions/"
-  echo "  ✓ 已复制扩展: extensions/"
+if [ -n "$ROLE" ]; then
+  UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  if [ "$ROLE" = box ]; then UNITS="nova-relay-tick.service nova-relay-tick.timer"; TIMER=nova-relay-tick.timer
+  else UNITS="nova-relay-watchdog.service nova-relay-watchdog.timer"; TIMER=nova-relay-watchdog.timer; fi
+  for u in $UNITS; do cp "$SRC/systemd/$u" "$UNIT_DIR/$u"; done
+  echo "  ok installed $UNITS to $UNIT_DIR"
+  echo "     enable with: systemctl --user daemon-reload && systemctl --user enable --now $TIMER"
+  echo "     (and: loginctl enable-linger \$USER so it runs without a login session)"
 fi
 
-echo "  ✓ 已复制并配置可执行权限: pi-task, pi-task.mjs, pi-call.mjs, pi-run"
-
-# 4. 打印后续指引
 echo ""
-echo "=========================================="
-echo "✅ 安装成功！已就绪于: $TARGET_DIR"
-echo "=========================================="
-echo ""
-echo "下一步操作建议："
-echo ""
-echo "1. 将工具目录加入 PATH（可在 ~/.bashrc 或 shell 配置中持久化）："
-echo "   export PATH=\"$TARGET_DIR:\$PATH\""
-echo ""
-echo "2. 运行冒烟测试（关闭通知，快速验证执行与追踪）："
-echo "   PI_NOTIFY_OFF=1 \"$TARGET_DIR/pi-task\" run /tmp 'Reply with only OK' --session smoke --owner smoke-test"
-echo "   # 观察输出包含 STATE done 后确认该任务："
-echo "   \"$TARGET_DIR/pi-task\" ack smoke-... --owner smoke-test"
-echo ""
-echo "3. 为 Grok Bot 配置 Webhook 唤醒例行任务："
-echo "   参考 routines/pi-task-notify.md 在 Bot 平台创建例行任务，并安全配置环境变量："
-echo "   <BOT>_PI_NOTIFY_URL 和 <BOT>_PI_NOTIFY_KEY"
-echo ""
-echo "4. 在 Grok Bot 中加载对应技能："
-echo "   - skills/grokbot-pi-setup   : 初始化环境与连通性验证"
-echo "   - skills/grokbot-pi-dispatch: 自动派活、监控与验收确认"
-echo ""
+echo "next:"
+echo "  1. edit $CONF_DIR/config.json  (docs/config.md)"
+echo "  2. nova-relay doctor"
+echo "  3. see README.zh-CN.md / docs/setup-box.md / docs/setup-vps.md"

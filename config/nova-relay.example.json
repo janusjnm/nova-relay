@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "self": "box",
+  "coordinator": "vps",
+  "display_tz": "Asia/Singapore",
+  "home": "~/.nova-relay",
+  "hosts": {
+    "box": { "role": "box", "ssh": "box", "bin": "~/.local/bin/nova-relay" },
+    "vps": { "role": "vps", "ssh": "mm01", "bin": "~/.local/bin/nova-relay" }
+  },
+  "limits": {
+    "segment_minutes": 12,
+    "idle_timeout_sec": 300,
+    "task_minutes": 180,
+    "max_segments": 10,
+    "max_local_retries": 3,
+    "max_segment_failures": 3,
+    "max_quota_pauses": 6,
+    "quota_pause_minutes": 60,
+    "lease_ttl_sec": 120,
+    "heartbeat_miss_minutes": 15,
+    "min_free_mb": 2048,
+    "retention_days": 7,
+    "max_log_bytes": 2097152,
+    "max_parallel": 2
+  },
+  "executors": {
+    "claude": {
+      "adapter": "claude",
+      "host": "box",
+      "bin": "claude",
+      "min_version": "1.0.0",
+      "fresh_session_every": 4,
+      "budget": { "segments_per_day": 40, "minutes_per_day": 360 },
+      "limits": { "max_parallel": 1 }
+    },
+    "codex": {
+      "adapter": "codex",
+      "host": "vps",
+      "bin": "codex",
+      "budget": { "segments_per_day": 60, "minutes_per_day": 480 }
+    },
+    "pi": {
+      "adapter": "pi",
+      "host": "vps",
+      "bin": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "key_env": "DEEPSEEK_API_KEY",
+      "budget": { "segments_per_day": 80 },
+      "limits": { "idle_timeout_sec": 600 }
+    },
+    "deepseek-text": {
+      "adapter": "deepseek-text",
+      "host": "vps",
+      "model": "deepseek-chat",
+      "key_env": "DEEPSEEK_API_KEY",
+      "budget": { "tokens_per_day": 2000000 }
+    }
+  },
+  "routing": {
+    "rules": [
+      { "type": "long-code", "executor": "claude", "fallback": ["codex"] },
+      { "type": "code", "executor": "codex", "fallback": ["pi"] },
+      { "type": "edit", "executor": "pi" },
+      { "type": "text", "executor": "deepseek-text" }
+    ],
+    "default": "pi"
+  },
+  "guard": {
+    "protected_branches": ["main", "master", "release/*"],
+    "allow_hosts": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]
+  },
+  "projects": {
+    "PD": {
+      "repo": { "box": "/home/box/work/pd", "vps": "/home/ops/work/pd" },
+      "worktrees": { "box": "/home/box/work/.nova-wt/pd", "vps": "/home/ops/work/.nova-wt/pd" },
+      "base": "main",
+      "owner": "grok-pd",
+      "env_file": "~/.config/nova-relay/pd.env",
+      "webhook": { "url_env": "PD_NOVA_WEBHOOK_URL", "key_env": "PD_NOVA_WEBHOOK_KEY" },
+      "checks": ["npm test --silent"],
+      "forbidden_paths": [".git/**", ".github/workflows/**", "**/.env", "**/.env.*", "infra/prod/**"]
+    },
+    "NM": {
+      "repo": { "box": "/home/box/work/nm", "vps": "/home/ops/work/nm" },
+      "worktrees": { "box": "/home/box/work/.nova-wt/nm", "vps": "/home/ops/work/.nova-wt/nm" },
+      "base": "main",
+      "owner": "grok-nm",
+      "env_file": "~/.config/nova-relay/nm.env",
+      "webhook": { "url_env": "NM_NOVA_WEBHOOK_URL", "key_env": "NM_NOVA_WEBHOOK_KEY" },
+      "executors": ["codex", "pi", "deepseek-text"],
+      "checks": ["make check"]
+    }
+  }
+}

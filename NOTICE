@@ -1,0 +1,11 @@
+nova-relay
+Copyright (c) 2026 janusjnm
+
+This project is a rewrite of GAP / grokbot-and-pi (MIT), which is itself based on
+robbin/grokbot-local-agent by Robbin Fan (MIT). The persistent task manager, preflight,
+idle timeout, destructive-command guard (pi-guard → nova-guard), approval flow and ack
+concepts come from upstream; the code has been rewritten. Upstream copyright and
+permission notices are retained in LICENSE.
+
+- https://github.com/robbin/grokbot-local-agent
+- https://github.com/Chasen-Liao/grokbot-and-pi

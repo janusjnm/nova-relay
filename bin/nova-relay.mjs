@@ -2,7 +2,7 @@
 // nova-relay — planner/executor relay CLI. Node >= 22, no dependencies. See docs/cli.md.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { ConfigError, configPath, loadConfig } from "../lib/config.mjs";
+import { ConfigError, configPath, loadConfig, loadSecrets } from "../lib/config.mjs";
 import { HANDLERS, dispatch, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
 import { call } from "../lib/rpc.mjs";
 import { doctor } from "../lib/doctor.mjs";
@@ -59,6 +59,8 @@ async function main() {
   if (cmd === "version" || cmd === "--version") return out(VERSION);
   if (cmd === "brief-template") return out(BRIEF_TEMPLATE);
 
+  const sec = loadSecrets();
+  if (sec.error) console.error(`nova-relay: ${sec.error} (not loaded)`);
   let cfg;
   try { cfg = loadConfig(); } catch (e) {
     if (cmd === "rpc") { out({ error: e.message }); process.exit(1); }

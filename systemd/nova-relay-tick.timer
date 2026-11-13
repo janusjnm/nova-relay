@@ -1,0 +1,10 @@
+[Unit]
+Description=nova-relay tick every 5 minutes (box)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
