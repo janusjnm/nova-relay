@@ -30,6 +30,20 @@
 - **Pi**：始终以 `--extension` 加载 `extensions/nova-guard.ts`，没有关闭开关；同时固定加 `--no-extensions`（不加载全局/自动发现的扩展——pi 按加载顺序调用扩展，后加载的扩展可以在守卫放行后改写 `event.input`）、`--no-approve`（不加载仓库 `.pi/extensions`、`.pi/settings.json`、`.pi/mcp.json` 等需信任的资源）、`--no-mcp`（`--tools` 白名单不会去掉 MCP 工具）。守卫对 bash/edit/write 做检查，read/grep/find/ls 放行，**其他任何工具一律拦截**。配置 `args` 里出现 `-e/--extension`、`-a/--approve` 会校验失败。扩展加载时写 `guard-loaded` 标记，分段成功结束却没有标记 → `blocked`。以上已用 pi 1.5.2 实机验证（见 config.md「参数核验情况」）。
 - **Codex**：没有逐命令 hook。约束来自三层：① `codex exec --sandbox workspace-write`（只能写工作目录、默认无网络），禁止沙箱绕过/信任参数与开启网络的覆盖；`--ignore-user-config --ignore-rules` 让 `~/.codex/config.toml`（MCP 服务器、沙箱设置）与 execpolicy 规则不生效，不加 `--trust` 所以仓库内 `.codex/` 配置不生效；② **事后审计**：以 `--json` 运行，事件流里每一条执行过的命令与文件改动都过一遍同一个守卫，每一次 MCP 工具调用都直接算命中，命中即生成 `audit` 审批请求（主题以 `ran:` / `wrote:` / `mcp:` 开头），任务进入 `needs_approval`——用户 approve 则继续，deny 则任务 `failed`（操作已经发生，deny 表示拒收这份工作）；分段成功结束却**一条可解析的事件都没有**（事件格式变了，审计等于失明）→ `blocked`；③ 所有执行者共同的验收阶段检查（见下）。注意：审计是**事后**的，它能发现并上报，不能阻止。事件信封已对照 codex-cli 0.169.0 实机输出与 `@openai/codex-sdk` 类型核验；登录后执行命令的事件仍需实测（failure-modes.md「必须实测」第 7 项）。
 
+## 进程隔离（可选，`isolation.mode: "strict"`）
+
+nova-guard 是启发式检查，**不是沙箱**。`isolation` 是另一层、默认**关闭**的操作系统级隔离（`lib/isolation.mjs`，bubblewrap），配置见 [config.md](config.md)「`isolation`」。
+
+- **fail closed**：strict 下，`apply_to` 里的步骤要么在 bwrap 里运行，要么不运行。bwrap 不存在、探测失败（只读探测：在空配置里运行 `true`，进程内缓存；不改主机设置）、适配器没有隔离配置（本版本只有 `claude`；`codex`/`pi` 的执行者步骤会被拒绝）、`~/.claude` 不存在、某个绑定路径不安全（`/`、HOME 或其祖先、nova-relay home 本身、`secrets.env`、凭据目录）→ 任务 `blocked`，原因写明“没有退回无隔离运行”。`mode: "off"` 时完全不调用 bwrap。
+- **能挡住什么**：沙箱内只有工作区可写；主机 HOME 是私有 tmpfs（`~/.ssh`、`~/.config/nova-relay`、`secrets.env`、其它项目、`/workspace` 之类的目录都看不到）；`/tmp` 私有；验收默认没有网络；独立的 pid namespace + `--die-with-parent`：分段被杀或 worker 退出时，沙箱里 `setsid` 出去的后台进程也随之结束（关闭隔离时它们可能存活，见下文已知局限）。执行者写到任务目录别处、HOME、`/tmp` 的东西都留在沙箱里，结束即丢弃；任务目录里只有 `hook-calls`、`approvals.jsonl` 两个文件被窄绑定为可写（hook 计数与审批请求要能写出来）。
+- **与官方 Claude 订阅登录的张力（如实说明）**：官方 `claude` 需要访问 Anthropic 的网络和它自己的官方凭据位置。nova-relay **不复制、不提取 token**，只把 `~/.claude` 目录（以及存在时的 `~/.claude.json`）**只读绑定**进沙箱，外加 CLI 二进制、node 与 hook 脚本——不是整个 `$HOME`。因此：
+  - 沙箱里的进程（包括执行者跑的命令）**仍能以同一用户读取这些凭据文件**。这不是“密钥防泄漏”的隔离；它挡住的是写、是其它目录，不是对官方登录文件的读取。
+  - 执行者步骤**不隔离网络**（否则订阅登录无法工作）。这是局限：沙箱里的代码可以联网（nova-guard 的外发规则仍按启发式拦截）。
+  - `~/.claude` 只读：CLI 不能刷新/写回登录状态、不能保存会话记录。strict 下每段都开新会话（不 `--resume`）；登录在运行中过期时 CLI 会报登录错误 → 按 `needs_auth` 处理（暂停、唤醒一次），不会绕过。官方 CLI 在只读 `~/.claude` 下能否完整跑完一个真实分段**尚未实测**（需要真实模型调用，属于外部验证关卡，见 failure-modes.md）。已实测：Claude Code 2.1.308 的真实二进制在该配置下（无网络、未绑定凭据）能启动并输出 `--version`。
+  - 只绑定 `bin` 解析后的那一个文件；包装脚本会失败（fail closed），请把 `bin` 设为真实二进制（`doctor` 会提示）。
+- **验收**：可写的只有独立临时 clone 和它的空 HOME；共享仓库的 git 目录只读，因此验收命令改不到共享 `.git`（关闭隔离时只能事后检测）。`acceptance_network: false`（默认）时验收无网络；需要网络的 `acceptance_setup` 明确 `FAIL setup`，不会悄悄联网。需要访问包仓库的项目在有显式 `acceptance_network: true` 之前不能用 strict 验收；即使设为 `true`，也不会挂载 HOME 或密钥。
+- **不是什么**：不是容器、不限制 CPU/内存、不做 seccomp 系统调用过滤、不切换系统用户；同一用户下内核攻击面仍在。真正高风险的项目仍应放在独立系统用户或虚拟机里。
+
 ### 验收阶段的独立检查（对所有执行者）
 
 验收是"完成"的唯一依据，执行者的自述（包括它打印的 `PASS`、"tests pass"）一律不作数。
@@ -83,7 +97,7 @@ Grok 把命令原样给用户看 → 用户决定
   - `cd` 在同一条命令行内跟踪；Claude 的 Bash 工具跨调用的 cwd 由 hook 输入的 `cwd` 提供。Pi 与 Codex 的 shell 若跨调用保留 cwd，guard 仍按 worktree 解析（Codex 只做事后审计）。子 shell 的括号不建模（`(cd ..; …)` 之后的命令仍按 `..` 解析，偏保守），`popd` 之后视为未知目录。
   - Makefile 里由变量拼出的 `include $(X)` 不展开；`.yarnrc.yml` 的 `yarnPath`、`bunfig.toml` 的 `preload` 不在执行时检查（验收阶段改动它们算 `harness`）。
   - 未列出的"换目录/写文件"参数（各种工具的 `--output`、`-o`、`--prefix`）只覆盖上面列出的常见命令；`chrt`、`strace`、`script -c` 等少见包装命令不解析。
-  - `setsid`/双 fork 脱离进程组的后台进程不会在分段结束时被杀；它们改不了验收用的干净检出里已提交的内容，但仍可能写 worktree 或 `/tmp`。
-- 验收命令（测试）本身会执行执行者写的代码，并且有网络——这是验收的本质。空 HOME、私有 TMPDIR、独立 clone 只是纵深防御：测试代码仍能按绝对路径读写同一用户下的文件（如 `/home/<user>/.codex/auth.json`、共享仓库的对象库或其它分支）。验收后会检测共享 `.git/config`/`hooks`/`info` 与任务分支的变化，其余不检测；只有容器或独立系统用户才能真正隔离。真正的边界还包括：worktree 隔离、子进程环境剔除密钥、验收阶段的篡改检查、以及"不 push"的流程。高风险项目请在容器或独立用户下运行执行者与验收。
+  - 关闭隔离时，`setsid`/双 fork 脱离进程组的后台进程不会在分段结束时被杀；它们改不了验收用的干净检出里已提交的内容，但仍可能写 worktree 或 `/tmp`。strict 执行者隔离下，它们在沙箱的 pid namespace 里，随沙箱一起结束。
+- **关闭隔离时（默认）**，验收命令（测试）本身会执行执行者写的代码，并且有网络——这是验收的本质。空 HOME、私有 TMPDIR、独立 clone 只是纵深防御：测试代码仍能按绝对路径读写同一用户下的文件（如 `/home/<user>/.codex/auth.json`、共享仓库的对象库或其它分支）。验收后会检测共享 `.git/config`/`hooks`/`info` 与任务分支的变化，其余不检测。可选的 `isolation.mode: "strict"`（bubblewrap，见上文）把验收限制在临时 clone 里、默认无网络；它仍不是容器或独立系统用户。真正的边界还包括：worktree 隔离、子进程环境剔除密钥、验收阶段的篡改检查、以及"不 push"的流程。高风险项目请在容器或独立用户下运行执行者与验收。
 - 篡改检查是启发式的：它能发现删测试、加 skip、改框架文件、移走分支，但发现不了"把断言改弱"（例如把 `assert.equal(x, 3)` 改成 `assert.ok(true)`）。范围（scope）里包含测试目录的任务，抽查时请看测试 diff。
 - Codex 的前置约束依赖其自身沙箱实现；nova-relay 的审计是事后的。

@@ -16,6 +16,7 @@
 | `hosts.<name>.role` | — | `box` / `vps`（其他值校验失败）；`claude` 只能在 `role: box` 的主机上 |
 | `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避。异步运行（≤120 s，超时算失败），期间租约照常续期；取消任务会杀掉它且不记录结论 |
 | `webhook` | — | 全局默认 webhook（`url_env`、`key_env`），项目可覆盖 |
+| `isolation` | `{"mode":"off"}` | 可选的**操作系统级进程隔离**（bubblewrap），默认关闭、行为不变；见下文「`isolation`」 |
 
 ## `limits`（全局默认，可在 `executors.<name>.limits` 覆盖）
 
@@ -35,12 +36,19 @@
 | `retention_days` | 7 | ack 后保留任务目录的天数 |
 | `max_log_bytes` | 2 MiB | 每段日志上限 |
 | `max_parallel` | 2 | 每执行者并发任务数（每台主机只有一个 worker 进程，由主机租约保证） |
+| `notify_cooldown_minutes` | 60 | 同一事故的唤醒合并窗口：同一批次里多个任务因**同一执行者级原因**被 `blocked`（CLI 参数、模型 id、守卫失效、严格隔离不可用、磁盘）或因网络反复失败而升级，只唤醒一次；同一主机对同一批次的 `<host>_unreachable` 两次通知之间至少隔这么久（链路抖动不会每次都唤醒）。第一次唤醒总是立即发出 |
 
 ## `executors.<name>`
 
 公共字段：`adapter`（`claude` / `codex` / `pi` / `deepseek-text`）、`host`、`bin`、`model`、`min_version`、`args`（附加参数）、`env`（附加环境变量）、`budget`、`limits`、`preflight_cmd`、`credential_files`（覆盖凭据文件检查）。
 
 `budget`（按 UTC 日）：`segments_per_day`、`minutes_per_day`、`tokens_per_day`、`cost_usd_per_day`。超出 → 执行者暂停到下一个 UTC 零点。
+
+用量与上限的含义（`nova-relay stats` 可查看）：
+
+- `segments`、`minutes` 由 nova-relay 自己计量，总是已知。`tokens`、`cost_usd` 只记录**提供方实际报告的数字**（Claude Code stream-json `result` 事件里的 `total_cost_usd` 与 `usage.*_tokens`；DeepSeek 的 `usage.total_tokens`；Codex `turn.completed` 的 `usage`）。没有报告的分段记为**未知**（`*_unknown` 计数），**不会当作 0**；nova-relay 不估价、不把 token 换算成美元。`tokens` 是已报告的 token 字段之和（Claude：input + output + cache_creation + cache_read）。
+- 订阅 CLI（Claude Code、Codex）报告的 token/费用**不是账单**，也**不是剩余订阅额度**。
+- 上限在**新分段开始前**检查：`segments_per_day` 在预检时原子地占用本分段的名额，并行任务不会超出；`minutes`/`tokens`/`cost_usd` 只有分段结束后才知道，**已在运行的分段可能超出上限**——这不是精确的硬性计费上限。`tokens_per_day`/`cost_usd_per_day` 只和已报告的数字比较；某执行者当天从未报告过该数字时，该上限无法执行（`doctor`、`stats` 会警告）。
 
 `limits`、`executors.<name>.limits`、`budget` 以及其他各层里**未知的键**（拼写错误，如 `segment_minuts`），与 `projects.<P>.executors` 里不存在的执行者，都会让配置校验失败，而不是悄悄回落到默认值。执行者只接受公共字段加上本适配器的字段（下表），例如给 `codex` 写 `permission_mode` 会报错。
 
@@ -68,6 +76,27 @@
 | deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验；本仓库**没有**用真实 key 核实过任何模型 id，模型名只以你自己的 `doctor --live`（`GET /models`）为准 |
 
 无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查（按版本缓存 1 小时），不满足则任务 `blocked` 并唤醒。
+
+## `isolation`（可选，默认关闭）
+
+```json
+"isolation": { "mode": "strict", "adapter": "bwrap", "apply_to": ["acceptance", "executor"], "acceptance_network": false, "ro_binds": [] }
+```
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `mode` | `"off"` | `off`：不包装任何进程，行为与之前完全相同。`strict`：`apply_to` 里的步骤**只能**在 bubblewrap 里运行；bwrap 不存在、探测失败（如禁用了非特权 user namespace）、适配器没有隔离配置、或某个路径无法安全绑定 → 该步骤**不运行**，任务 `blocked` 并唤醒（同一原因合并为一次）。**绝不退回到无隔离运行** |
+| `adapter` | `"bwrap"` | 目前唯一的适配器；其他值是配置错误 |
+| `apply_to` | `["acceptance","executor"]` | `acceptance`：验收命令（含 `acceptance_setup`、文本任务的验收命令、`nova-relay accept`）。`executor`：agent 执行者的分段进程。本版本只有 `claude` 适配器有执行者隔离配置；`codex`/`pi` 在 strict + `executor` 下会 fail closed（`blocked`）。`deepseek-text` 是进程内的 HTTP 调用，没有子进程可隔离 |
+| `acceptance_network` | `false` | strict 验收默认 `--unshare-net`（无网络）。需要网络的 `acceptance_setup`（`npm ci` 等）会 `FAIL setup`（错误里注明是隔离导致无网络），不会悄悄联网；`doctor` 对有 `acceptance_setup` 的项目给出 WARN。设为 `true` 是显式选择：验收有网络（并绑定只读 DNS/CA 文件），仍然不挂载 HOME 与密钥 |
+| `ro_binds` | `[]` | 额外只读绑定的绝对路径（工具链，如 `/opt/go`）。拒绝：`/`、HOME 本身或其祖先、nova-relay home、`secrets.env`、凭据/密钥目录（`~/.ssh`、`~/.config/nova-relay`、`~/.claude`、`~/.codex`、`~/.aws`、`~/.npmrc` …）及其祖先 |
+
+严格配置（profile）：新的 user/pid/uts/ipc namespace、`--die-with-parent`、`--new-session`；只读 `/usr`（及主机上的 `/bin`、`/lib*`、`/sbin`）和少量 `/etc` 文件（passwd、group、ld.so 缓存；有网络时才加 resolv.conf 与 CA 证书）；私有 tmpfs `/tmp`；HOME 路径上是私有 tmpfs（主机 HOME 里的东西都看不到）；运行 nova-relay 的 node 安装目录只读（并追加到 PATH）。可写的只有本步骤的工作区：
+
+- 验收：独立临时 clone 及其空 HOME；共享仓库的 git 目录只读（clone 是 `--shared`）。文本任务的验收命令在私有 HOME 里运行，`result.md` 只读，任务目录其他文件不可见。
+- 执行者（claude）：任务 worktree 与它私有的 git 目录（`.git/worktrees/<id>`）可写，共享 `.git` 只读（执行者在沙箱里不能创建提交对象；分段结束后由 nova-relay 在沙箱外 checkpoint）；任务目录里**只有** `hook-calls` 与 `approvals.jsonl` 两个文件可写；`~/.claude` 只读**绑定**（不是复制；`~/.claude.json` 存在时也只读绑定）、CLI 二进制只读、nova-relay 包目录只读（hook 脚本）。**不隔离网络**（订阅登录需要访问 Anthropic）。`~/.claude` 只读，会话记录无法保存，所以 strict 下每个分段都开新会话（只带进度摘要，不 `--resume`）。
+
+注意：只绑定 `bin` 解析后的那**一个文件**。本机的 `~/.local/bin/claude` 若是 `exec "$HOME/.local/bin/claude.real"` 之类的包装脚本，在沙箱里会找不到真正的程序（分段失败，不会退回无隔离运行）；`doctor` 会对脚本形式的 `bin` 给出 WARN，请把 `executors.claude.bin` 设为 `readlink -f` 得到的真实二进制的绝对路径。安全含义与局限见 [security.md](security.md)「进程隔离（可选）」。
 
 ## `routing`
 

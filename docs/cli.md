@@ -30,14 +30,19 @@
 | `nova-relay watchdog` | VPS 定时器入口：tick + 经 ssh 让**正在运行**的执行主机 resume；连不上的主机只记录 `reachable: false` 与 `unreachable_since`（不能唤醒它） |
 | `nova-relay heartbeat` | 手动向 coordinator 推心跳 |
 | `nova-relay unpause <executor>` | 重新登录/充值后解除暂停，把 needs_auth/paused 任务重新排队并向 coordinator 上报 |
-| `nova-relay accept <task>` | 手动重跑验收（与 runner 相同：任务分支提交在独立临时 clone 里的干净检出、白名单环境 + 空 HOME + 私有 TMPDIR + 清理过的 PATH + 项目 `env_file`、`acceptance_setup`、篡改检查；与 worker 的验收用不同的临时目录），打印 `PASS` / `FAIL <where>`；worktree 里有未提交改动时为 `FAIL uncommitted` |
+| `nova-relay accept <task>` | 手动重跑验收（与 runner 相同：任务分支提交在独立临时 clone 里的干净检出、白名单环境 + 空 HOME + 私有 TMPDIR + 清理过的 PATH + 项目 `env_file`、`acceptance_setup`、篡改检查；与 worker 的验收用不同的临时目录），打印 `PASS` / `FAIL <where>`；worktree 里有未提交改动时为 `FAIL uncommitted`。`isolation` 为 strict 且包含 `acceptance` 时同样在 bwrap 里运行，不可用 → `FAIL isolation`（不会无隔离运行） |
 | `nova-relay outbox [--flush]` | 查看待发消息与死信（只有 webhook 会成为死信；主机间上报一直重试）；`--flush` 先把死信恢复为待发，再立即发送一次 |
 | `nova-relay gc` | 清理 ack 后（或已交接到别的主机）的 worktree，超过保留期的任务/批次/outbox，以及崩溃残留的 tmp/锁文件。删任务前先在原目录写墓碑 `fenced.json`、删批次前先写 `batches/tombstones/<id>.json`：之后同一个 id（例如同一个 `--key` 重试）永远不会被重新创建。墓碑本身**永不清理**（每个约 100 字节，外加一个目录） |
 | `nova-relay rpc <method>` | 主机间调用（stdin/stdout JSON），供 ssh 使用 |
+| `nova-relay stats [--json]` | 本机**当天（UTC 日）**每个执行者的用量：分段数、分钟（本地计量）；token 与费用分为**已报告**的数字和**未报告（未知）**的分段数——未知显示为 unknown / `null`，**不是 0**；已配置的上限、是否超限、无法执行的上限（提供方从未报告该数字）；暂停状态（原因、到期时间）；通知计数：`notification_deliveries`（按 outbox 去重键计的成功送达数）、`notification_attempts`（每次发送尝试）、`notification_failures`，分 planner webhook 与主机上报两类，以及被冷却合并掉的唤醒数。存储用 UTC，显示用 `display_tz`（默认 Asia/Singapore）。**这些不是账单、不是剩余订阅额度**；通知计数是发出去的消息，不是模型消耗，也不证明 Grok 真的处理了 |
+| `nova-relay recommend [--json]` | 基于本机记录的路由证据（`run/routing-evidence.jsonl`：每个任务终态时的类型、执行者、PASS/FAIL、重试、耗时、**已报告**的费用/token）给出**建议**：每个任务类型 × 执行者的样本数、通过率及 95% Wilson 区间、置信度（< 5 个样本 = `insufficient data`，< 15 low，< 40 medium，否则 high）、耗时中位数、平均重试、已测费用均值。只有双方都 ≥ 5 个样本且 95% 区间不重叠时才建议换执行者。**从不自动修改路由**：`routing.rules` 与 `routing.reroute_paused` 只能由你编辑配置来改 |
+| `nova-relay snapshot [--out DIR]` | 元数据快照，写入新的 0700 目录（文件 0600，默认 `<home>/snapshots/snap-<时间>-<随机>`；目录必须不存在或为空）：任务的 state/journal/brief/progress/result/events/approvals/decisions/墓碑、批次视图与墓碑、outbox（含已发送记录，用于去重）、暂停/预算/通知计数/事故/路由证据，外加 `config.redacted.json`（执行者 `env` 的值被替换、全文脱敏）和带 sha256 的 `manifest.json`。**默认排除**：`secrets.env` 与任何密钥值、项目 `env_file` 内容、执行者凭据（`~/.claude`、`~/.codex`、`credential_files`）、ssh 密钥、分段日志、租约/锁/PID、worker/心跳/主机状态文件、CLI 契约缓存、交接 bundle；home 里的符号链接不跟随（列为 skipped）。**git 仓库、`nova/<task>` 分支与 worktree 不在快照里，恢复快照也不会恢复它们**。worker 运行时逐个文件复制，想要一致的快照请在 worker 空闲时做 |
+| `nova-relay restore --from DIR --dest DIR [--replay-outbox] [--json]` | 恢复演练。`--dest` **必填**，必须不存在或为空，不能是在用的 home、在其内部或包含它，也不能与快照目录重叠。写入前先全部校验，任何一项失败**什么都不写**：清单格式与版本（比本程序新的 state schema / 快照格式拒绝）、每个路径（相对、无 `..`/绝对路径/反斜杠、在白名单内——防 zip-slip）、源文件必须是普通文件（不是符号链接）且真实位于快照内、sha256 一致、批次 ↔ 任务引用完整（coordinator 的快照：任务引用的批次存在，批次里已送达本主机的任务存在或有墓碑）。恢复后：**不启动 worker**；不恢复租约与 PID；`queued`/`running`/`paused` 的任务改为 `blocked`（原因注明“从快照恢复，未自动续跑，worktree/分支不在快照里”）；待发的 outbox 移到 `outbox/held/`，**不会发送**（除非显式 `--replay-outbox`）；写 `RESTORED.json` |
+| `nova-relay migrate --dry-run [--from DIR] [--json]` | 升级/回滚计划：本版本能读什么（state/batch schema、配置 schema、快照格式）、不能读什么（比本程序新的 schema：拒绝，从不改写），扫描在用的 home（或 `--from` 指定的快照）按 schema 计数，回滚步骤，以及快照**不包含**的内容。只支持 `--dry-run`（本版本没有需要执行的迁移）；有读不了的文件时退出码 1 |
 
 ## 退出码
 
-`0` 成功；`1` 失败（含 doctor 有 FAIL、accept FAIL）；`2` 用法错误；`3` 配置错误。
+`0` 成功；`1` 失败（含 doctor 有 FAIL、accept FAIL、`migrate --dry-run` 发现读不了的文件、`restore` 校验失败）；`2` 用法错误（含不带 `--dry-run` 的 `migrate`）；`3` 配置错误。
 
 `dispatch` 的退出码只是摘要，真正的答案是 `--json` 的结果：
 

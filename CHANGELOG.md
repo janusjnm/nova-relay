@@ -28,6 +28,70 @@ A small, config-driven relay between a planner and coding executors:
 - **nova-guard** (formerly pi-guard), approval flow (`needs_approval` / `approve` / `deny`),
   per-executor daily budgets, quota pause and optional reroute, `doctor` (opt-in `--live`).
 
+### Enhancements in this draft (all opt-in or additive; existing configs stay valid, schema 1)
+
+- **Opt-in process isolation** (`isolation`, default `mode: "off"` = unchanged behaviour;
+  `lib/isolation.mjs`). `mode: "strict"` runs the steps in `apply_to` (`acceptance`, `executor`;
+  default both) inside bubblewrap: new user/pid/uts/ipc namespaces, `--die-with-parent`,
+  `--new-session`, read-only `/usr` (+ `/bin`, `/lib*`) and a few `/etc` files, private tmpfs `/tmp`
+  and a private tmpfs over the host home, writable binds only for the workspace. Acceptance: the
+  scratch clone + its HOME writable, the shared git dir read-only, **no network** unless
+  `acceptance_network: true` (a setup that needs the registry fails as `FAIL setup`, noted as caused
+  by isolation). Executor: **claude only** in this version — worktree + its private git dir writable,
+  only `hook-calls`/`approvals.jsonl` writable in the task dir, `~/.claude` (and `~/.claude.json`)
+  bound **read-only** (a bind, not a token copy), network kept (subscription auth needs it), a fresh
+  session every segment (the read-only session store cannot be resumed). Fail closed: missing bwrap,
+  a failed probe (read-only, cached in-process), an adapter without a profile (codex, pi), a missing
+  `~/.claude` or an unsafe bind (`/`, the home dir or an ancestor, the nova home, secrets/credential
+  dirs) → the step does not run and the task is `blocked`; never an unsandboxed fallback. `ro_binds`
+  adds narrow read-only toolchain paths. `doctor` reports available/unavailable, per-executor
+  readiness, script-wrapper `bin`s and offline `acceptance_setup`. **Not secret-proof**: the
+  sandboxed claude process can read the bound credential files as the same user, and executor
+  network is not isolated.
+- **Measured usage, not guessed** (`lib/usage.mjs`): Claude `total_cost_usd` and `usage.*_tokens`,
+  DeepSeek `usage.total_tokens`, Codex `turn.completed.usage` are recorded when reported and stay
+  `null` (unknown) when not — previously a missing Claude cost became `0` and most segments recorded
+  `tokens: 0`, which looked like a measured zero. The daily ledger keeps `*_measured` / `*_unknown`
+  segment counts; nothing is priced or converted. Caps: `reserveSegment` takes the new segment's slot
+  atomically at preflight (parallel tasks cannot overshoot `segments_per_day`); minutes/tokens/cost of
+  segments in flight can still overshoot (documented: not a hard billing cap). Caps that cannot be
+  enforced because a provider never reported the number are flagged.
+- **`nova-relay stats [--json]`**: today's (UTC day; shown in Asia/Singapore) usage per executor
+  with measured vs unknown fields, configured caps, pause state, and notification counts per outbox
+  kind — `notification_deliveries` (unique outbox keys sent), `notification_attempts`,
+  `notification_failures`, plus wakes suppressed by cooldown. These are notifications, not model
+  consumption; subscription token figures are not a bill and not remaining quota.
+- **Wake aggregation by incident**: executor-wide blocks (CLI flags, model id, guard inactive,
+  isolation unavailable, disk) and network-caused escalations get a durable incident id
+  (`run/incidents.json`, reused within `limits.notify_cooldown_minutes`, default 60); tasks of one
+  batch with the same incident share one outbox key → one wake, the first sent immediately.
+  `batch_done` (exactly one, none after ack, same payload), approval/auth wakes and outbox retries are
+  unchanged. A webhook dropped because the batch was acked is no longer counted as delivered.
+- **Behaviour change — `<host>_unreachable`**: a *new* outage of the same host for the same batch
+  within `notify_cooldown_minutes` of the last such wake is suppressed (counted); after the cooldown
+  a still-unreachable host wakes again. Previously every short outage woke the planner.
+- **Routing evidence + `nova-relay recommend [--json]`** (`lib/evidence.mjs`): every done/failed
+  verdict appends type, executor, outcome, retries, elapsed/active minutes and measured cost/tokens
+  (or null) to `run/routing-evidence.jsonl`. `recommend` reports per type × executor the sample
+  size, pass rate with a 95% Wilson interval, a confidence label (`insufficient data` below 5
+  samples), and suggests another executor only when both have ≥ 5 samples and the intervals do not
+  overlap. **It never changes routing**; `routing.reroute_paused` is still the only automatic reroute.
+- **Backup / restore / upgrade plan** (`lib/backup.mjs`): `nova-relay snapshot [--out DIR]` (0700
+  dir, 0600 files, sha256 manifest, redacted config; allowlisted metadata only — no secrets, env file
+  contents, credentials, logs, leases/PIDs, worktrees; symlinks not followed); `nova-relay restore
+  --from DIR --dest DIR [--replay-outbox]` (dest required, never the live home, must be empty;
+  manifest/paths/symlinks/hashes and batch↔task integrity verified before anything is written; no
+  worker started; queued/running/paused tasks become `blocked`; pending outbox entries held unless
+  `--replay-outbox`); `nova-relay migrate --dry-run [--from DIR]` (readable/unreadable schemas,
+  rollback steps, exclusions). **A metadata backup does not restore git repositories, `nova/<id>`
+  branches or worktrees.**
+- **Fault harness** (`tests/fault-harness.test.mjs`): lost network, quota wall, auth failure, hung
+  executor and notification delivery failure, all `[simulated]` with the existing fake CLI; the
+  `[real-runtime]` cases are the live bwrap tests (skipped with a reason where bwrap cannot run).
+  docs/failure-modes.md lists the pending external integration gates.
+- **CI**: `.github/workflows/test.yml` runs `npm test` on Node 22 for push and pull_request (no
+  secrets, no services).
+
 ### Setup requirements that will break an unedited or older config
 
 - **Explicit DeepSeek model ids.** `pi` and `deepseek-text` have no default `model`. The example
@@ -124,10 +188,12 @@ A small, config-driven relay between a planner and coding executors:
   *resumes* tasks from the last checkpoint only after the box runs again and its own timer (or the
   watchdog) runs.
 - **nova-guard is a heuristic, not a sandbox.** It parses commands, wrappers, directory changes and
-  scripts, but deliberately obfuscated code can get past it. Acceptance runs code the executor wrote,
-  as the same user: the empty HOME, private TMPDIR and standalone clone are defence in depth, and code
-  can still read or write files by absolute path. Use containers or a separate system user for
-  high-risk projects. Codex is audited after the fact, not blocked beforehand. Known gaps are listed
+  scripts, but deliberately obfuscated code can get past it. With isolation off (the default),
+  acceptance runs code the executor wrote, as the same user: the empty HOME, private TMPDIR and
+  standalone clone are defence in depth, and code can still read or write files by absolute path.
+  The opt-in strict bwrap isolation narrows this but is not a container, has no seccomp or resource
+  limits, keeps executor network, and leaves the bound `~/.claude` readable. Use a separate system
+  user or VM for high-risk projects. Codex is audited after the fact, not blocked beforehand. Known gaps are listed
   in [docs/security.md](docs/security.md).
 - Tamper checks do not detect weakened assertions; spot-check test diffs.
 - **Fail closed means stalls, by design.** A same-host lock holder that is alive but stopped
@@ -152,7 +218,10 @@ A small, config-driven relay between a planner and coding executors:
 
 ### Verified vs. still to verify on real machines
 
-- Verified locally: the full test suite (`npm test`, 167 tests), also with `NOVA_RELAY_HOME` /
+- Verified locally: the full test suite (`npm test`, 200 tests, including `[real-runtime]` bubblewrap
+  0.12.0 cases on this box: workspace-only writes, hidden host home/canary secret, pid namespace,
+  setsid'd background process ended with the sandbox, an end-to-end strict executor + acceptance PASS
+  with the fake CLI), also with `NOVA_RELAY_HOME` /
   `NOVA_RELAY_CONFIG` / `NOVA_RELAY_SECRETS` exported to an unused canary path that stayed empty; `install.sh` run twice into an
   isolated temporary HOME; Claude Code 2.1.308 flags and hook (live, earlier review); codex-cli 0.169.0
   and pi 1.5.2 flags/event envelopes against the real CLIs without login (fixtures in
@@ -165,4 +234,7 @@ A small, config-driven relay between a planner and coding executors:
   unreachable host and the late cancel when it returns; `kill -STOP` on a running worker;
   Codex logged in (command events in the audit); pi with a real DeepSeek key and the
   model id you chose (`doctor --live`, then one small task); cross-host quota reroute over real ssh;
-  `acceptance_setup` timing and network needs on your real projects.
+  `acceptance_setup` timing and network needs on your real projects; the official claude CLI running
+  a real segment under strict isolation with a read-only `~/.claude` (only `claude --version` inside
+  the profile was checked here; a real segment needs a model call); which `usage` fields real Claude
+  Code `result` events carry; a snapshot/restore drill on the real hosts; the first GitHub Actions run.

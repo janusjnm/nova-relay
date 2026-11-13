@@ -71,7 +71,7 @@ stateDiagram-v2
 | 主题 | 做法 |
 |---|---|
 | 真相来源 | 磁盘任务库 `~/.nova-relay/tasks/<id>/`：`brief.md`、`state.json`、`journal.jsonl`、`events.jsonl`、`progress.md`、`result.md`。原子写（tmp+rename）；`state.json` 损坏时用 journal 重放。 |
-| 批次与唤醒 | webhook **只在**：整个批次结束；某任务分段失败 >3 次；需要审批 / 需要登录 / 被阻塞。payload 只有 `{source,batch,id,state,exit_code}`，不含任务内容和密钥。去重键放在 `Idempotency-Key` 头。经持久化 outbox 按入队顺序发送、失败退避重试；不跟随重定向（3xx 留在 outbox），唤醒不会被悄悄送到别处。 |
+| 批次与唤醒 | webhook **只在**：整个批次结束；某任务分段失败 >3 次；需要审批 / 需要登录 / 被阻塞。payload 只有 `{source,batch,id,state,exit_code}`，不含任务内容和密钥。去重键放在 `Idempotency-Key` 头。经持久化 outbox 按入队顺序发送、失败退避重试；不跟随重定向（3xx 留在 outbox），唤醒不会被悄悄送到别处。**按事故合并**：同一批次里多个任务因同一个执行者级原因被阻塞、或同一次网络事故导致升级，只唤醒一次（第一次立即发出）；主机不可达通知有冷却期（`notify_cooldown_minutes`，默认 60），链路抖动不会反复唤醒。 |
 | 分段 | 每段有墙钟上限（默认 12 分钟）和空闲超时；每段结束后由 nova-relay 在任务分支上 `git commit` 检查点，并把执行者的 PROGRESS 摘要写入 `progress.md`；下一段带「进度摘要」而非完整历史。 |
 | 本地重试 | 验收 FAIL 时把错误本身交给执行者重试，最多 `max_local_retries` 次再上报。 |
 | 隔离 | 每个任务一个 git worktree + 分支 `nova/<id>`；同项目文件范围重叠的任务不并发；PD / NM 等项目用各自的 repo、worktree 目录、env 文件、webhook、owner，路由拒绝跨项目路径。 |
@@ -83,7 +83,11 @@ stateDiagram-v2
 | 恢复 | 分三件事：**检测**、**通知**、**主机恢复运行后续跑**。租约（lease）带 TTL，抢占在文件锁内重新检查后进行，两个 watchdog 不会重复续跑。检测：VPS watchdog 每 5 分钟尝试 `ssh box … resume-all`，连不上就记录 `unreachable_since`；box 运行时自己的定时器发现死掉/冻结的 worker。通知：box 心跳超时 → 每次中断发一次 `box_unreachable` webhook，它只唤醒 Grok 的 Routine，**不会唤醒机器**。续跑：只有 box 重新运行后（它自己的定时器或下一次连上它的 watchdog），才从最后一个 checkpoint 继续。ssh 不能唤醒或解冻挂起的主机，nova-relay 的任何部分都做不到；box 睡着时它上面的任务只能等待。 |
 | 派发送达 | 任务提交前先以 `submitting` 登记到批次。提交超时或回复丢失时不猜结果：让执行主机对每个 id 做 fence——已存在就报告真实状态，不存在就写墓碑（之后迟到/重试的提交被拒，永久有效：gc 从不删墓碑，删任务/批次前还会各留一个），只有这种才判 `FAIL submit`。主机连不上时批次保持 WAIT，coordinator 的 tick 继续对账；10 分钟的对账延迟只是调度提示，不是正确性假设。`dispatch --key K` 让重试变安全：同一个键永远对应同一个批次和同样的任务 id，只重新提交还没对账的任务。`dispatch --json` 给出每个任务的送达情况（`unknown`/`delivered`/`not_delivered`/`abandoned`）；退出码 75 = 送达未知，用同一个键重试。不带键时，看到 `submit error:` 不要重新 dispatch。 |
 | 放弃主机 | 只能显式操作：`nova-relay abandon <batch> --host H --yes` 结束该主机在批次里未结束的条目（`abandoned`，批次 FAIL）。它**不声称远端已经停止**（取消会排队，等主机回来才送达），之后该主机的迟到上报只记录、不生效。没有任何自动放弃。 |
-| 密钥 | 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600）。`secrets.env` 里的每个变量名、配置声明的密钥变量名（webhook `url_env`/`key_env`、执行者 `key_env`）以及像密钥的名字（`*_KEY`、`*_TOKEN`…），不论叫什么都不传给执行者与验收命令，值在日志/结果里脱敏（pi 显式拿到它自己的 `key_env`）。这是环境变量层面的隔离，不是沙箱：同一用户下的代码仍能按绝对路径读文件（见 docs/security.md）。 |
+| 进程隔离（可选） | `isolation.mode: "strict"`（默认 `off`）：验收命令和/或 claude 执行者在 bubblewrap 里运行——只有工作区可写、主机 HOME 与 `/tmp` 为私有 tmpfs、独立 pid namespace、验收默认无网络。bwrap 不可用或配置不安全 → 该步骤**不运行**（`blocked`），绝不退回无隔离。与官方订阅登录的张力如实说明：claude 执行者保留网络，`~/.claude` 只读**绑定**（不复制 token），沙箱里的代码仍能读这些凭据文件。nova-guard 仍是启发式检查，不是沙箱。见 docs/security.md |
+| 用量与预算 | `segments`/`minutes` 本地计量；token/费用只记提供方**报告**的数字，没报告就是**未知**（不当作 0），不估价。订阅 CLI 的 token/费用不是账单、不是剩余额度。上限在新分段开始前检查，`segments_per_day` 原子占位；已在运行的分段可能超出分钟/token/费用上限（不是精确的硬性计费上限）。`nova-relay stats [--json]` 显示当天用量、上限、暂停与通知计数（送达数/尝试数，不是模型消耗） |
+| 路由证据 | 每个任务终态时在本机记录类型、执行者、结果、重试、耗时与已报告的费用；`nova-relay recommend` 给出带样本数和保守置信度（样本不足明确标出）的建议，**从不自动改路由** |
+| 备份 / 恢复 | `snapshot`（不含密钥、日志、租约，**不含 git 分支与 worktree**）、`restore --from … --dest <空目录>`（先全部校验：路径穿越、符号链接、哈希、批次↔任务引用；不启动 worker、未完成任务改为 blocked、待发通知扣住不重放）、`migrate --dry-run`（能读/不能读、回滚步骤） |
+| 密钥 | 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600）。`secrets.env` 里的每个变量名、配置声明的密钥变量名（webhook `url_env`/`key_env`、执行者 `key_env`）以及像密钥的名字（`*_KEY`、`*_TOKEN`…），不论叫什么都不传给执行者与验收命令，值在日志/结果里脱敏（pi 显式拿到它自己的 `key_env`）。这是环境变量层面的隔离，不是沙箱：关闭进程隔离时，同一用户下的代码仍能按绝对路径读文件（见 docs/security.md）。 |
 
 > ⚠️ **恢复能力必须在真实环境中验证。** 睡眠、重启、Tailscale 断线下的续跑逻辑有单元/集成测试覆盖，但真实机器上的行为（systemd 定时器、ssh、CLI 版本）只能实测确认。nova-relay **不保证**可用性、不保证零停机，也不能唤醒睡眠中的 box。它的设计目标是：状态在磁盘上、能检测并每次中断通知一次、主机重新运行后（需要它自己的定时器或 watchdog 跑起来）从 checkpoint 续跑、重试与时长都有上限而不是无限循环、每次停止都记录为任务状态而不是悄悄丢掉。这些是经本地测试检查的设计目标，不是保证——磁盘损坏、主机再也回不来、未实测的真实机器行为都不在其内。
 
@@ -133,7 +137,9 @@ npm test     # node --test，无第三方依赖，Node >= 22
 
 测试会从子进程/测试上下文的环境中剥离 `NOVA_RELAY_HOME`、`NOVA_RELAY_CONFIG`、`NOVA_RELAY_SECRETS`、`NOVA_RELAY_HOST` 等 `NOVA_*` 变量、webhook/密钥类变量和执行者提供商变量（`tests/helpers.mjs` 的 `isolatedEnv`），只设置临时配置所需的值。此前在导出了运维 home 的 shell 里跑 `npm test` 并不安全：CLI 测试会把批次、任务和待发 webhook 写进该 home。现在已修复，但测试仍不是沙箱——请勿在生产主机上用真实密钥跑测试。
 
-代码结构：`lib/executors/*.mjs`（每个执行者一个文件，新增执行者 = 加一个文件 + 注册一行）、`lib/runner.mjs`（分段循环）、`lib/relay.mjs`（批次/worker/续跑/tick/gc）、`lib/acceptance.mjs`、`lib/guard.mjs`、`lib/notify.mjs`（唤醒规则 + outbox）、`lib/doctor.mjs`。
+测试名带标签：`[simulated]`（伪造的 CLI / fetch 注入故障，`tests/fault-harness.test.mjs` 演练断网、额度墙、登录失效、卡死、通知送达失败）与 `[real-runtime]`（本机真实 bubblewrap，没有时自动跳过并写明原因）。真实 VPS/ssh、Codex 登录、DeepSeek 凭据、非回环 webhook、真实睡眠/重启、生产仓库都**不在**测试范围内，见 docs/failure-modes.md「待完成的外部集成关卡」。`.github/workflows/test.yml` 在 push / PR 上用 Node 22 跑 `npm test`（无密钥、无额外服务）。
+
+代码结构：`lib/executors/*.mjs`（每个执行者一个文件，新增执行者 = 加一个文件 + 注册一行）、`lib/runner.mjs`（分段循环）、`lib/relay.mjs`（批次/worker/续跑/tick/gc）、`lib/acceptance.mjs`、`lib/guard.mjs`、`lib/notify.mjs`（唤醒规则 + 事故合并 + outbox）、`lib/doctor.mjs`、`lib/isolation.mjs`（可选的 bwrap 进程隔离）、`lib/usage.mjs` + `lib/budget.mjs` + `lib/stats.mjs`（用量与预算）、`lib/evidence.mjs`（路由证据与建议）、`lib/backup.mjs`（快照/恢复/迁移计划）。
 
 ## 许可
 
