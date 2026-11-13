@@ -23,7 +23,7 @@ systemctl --user enable --now nova-relay-tick.timer
 loginctl enable-linger "$USER"     # 无登录会话时定时器也运行
 ```
 
-`install.sh` 只复制本地文件，不下载、不删除，重复运行安全；版本并排安装在 `~/.local/share/nova-relay/versions/<ver>`，`current` 原子切换。
+`install.sh` 只复制本地文件，不下载、不删除，重复运行安全；版本并排安装在 `~/.local/share/nova-relay/versions/<ver>`，`current` 原子切换。已有的 `config.json`/`secrets.env` 不会被覆盖；systemd 单元的 `ExecStart` 指向实际使用的 bin 目录（`NOVA_RELAY_BIN_DIR`），你改过的单元不会被覆盖，新版本写在旁边的 `<单元>.nova-new`。
 
 ## 3. 配置
 
@@ -81,6 +81,6 @@ nova-relay dispatch --project PD /tmp/smoke.md
 nova-relay pending --owner grok-pd
 ```
 
-验收在任务分支提交的干净检出里运行（不是执行者的 worktree），被 gitignore 的 `node_modules/` 等不存在：项目 `checks` 需要依赖时，在项目配置里写 `acceptance_setup`（如 `["npm ci --silent"]`），否则冒烟测试会因缺依赖 FAIL。
+验收在任务分支提交的干净检出里运行（不是执行者的 worktree），被 gitignore 的 `node_modules/` 等不存在：项目 `checks` 需要依赖时，在项目配置里写 `acceptance_setup`（如 `["npm ci --silent"]`），否则冒烟测试会因缺依赖 FAIL。验收的 HOME 是空的（无 `~/.npmrc`、无包缓存），setup 通常要联网；装不上时 verdict 是 `FAIL setup:…`（任务 failed、唤醒，不重试），先检查网络/registry。
 
 然后按 [failure-modes.md](failure-modes.md) 末尾「必须实测的项目」逐项实测睡眠/重启/断网恢复。

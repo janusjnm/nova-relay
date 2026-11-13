@@ -24,7 +24,7 @@ systemctl --user enable --now nova-relay-watchdog.timer
 loginctl enable-linger "$USER"
 ```
 
-`install.sh` 会记录当前 `node` 的绝对路径（`bin/.node-path`），所以经 ssh 或 systemd（PATH 很短）调用 `nova-relay` 时也能找到用 nvm 等方式安装的 Node；同目录下 `npm -g` 安装的 `codex`/`pi` 也会加入 PATH。若执行者 CLI 在别处，请在配置里写 `bin` 的绝对路径。
+`install.sh` 会记录当前 `node` 的绝对路径（`bin/.node-path`），所以经 ssh 或 systemd（PATH 很短）调用 `nova-relay` 时也能找到用 nvm 等方式安装的 Node；同目录下 `npm -g` 安装的 `codex`/`pi` 也会加入 PATH。若执行者 CLI 在别处，请在配置里写 `bin` 的绝对路径。systemd 单元的 `ExecStart` 指向实际使用的 bin 目录（`NOVA_RELAY_BIN_DIR`）；你改过的单元重复安装时不会被覆盖，新版本写在旁边的 `<单元>.nova-new`。
 
 没有 systemd 时用 cron（效果相同）：
 

@@ -17,7 +17,7 @@ nova-relay brief-template > /tmp/nova-<short>.md
 - `type:` 选路由键：`long-code`（长任务，box 上的 Claude Code，分段续跑）、`code`（Codex）、`edit`（Pi + DeepSeek）、`text`（纯文本，DeepSeek API）。以项目配置为准。
 - `# Goal`：一段话，可观测的完成标准。
 - `# Scope`：仓库相对路径/glob，越小越好。不能有绝对路径、`..`、`~`、`$`。不同任务尽量不重叠（重叠的不会并发）。
-- `# Acceptance`：每行一条命令，全部 exit 0 = 通过（例：`npm test -- auth`、`npx tsc --noEmit`）。不要写"人工检查"。验收在任务分支提交的干净检出里跑（被 gitignore 的依赖不存在，项目需要时在配置 `acceptance_setup` 里装），环境不含主机变量。空 diff、改禁止路径会判 FAIL 并重试；删测试/加 skip/减少用例、改测试框架或验收命令引用的脚本、改 `package.json` 的 scripts 判为篡改，**不重试**。任务本来就要改测试框架时，在 front matter 写 `allow_harness_changes: true`。
+- `# Acceptance`：每行一条命令，全部 exit 0 = 通过（例：`npm test -- auth`、`npx tsc --noEmit`）。不要写"人工检查"。验收在任务分支提交的干净检出（独立临时 clone）里跑（被 gitignore 的依赖不存在，项目需要时在配置 `acceptance_setup` 里装；setup 失败判 `FAIL setup:…`，不重试，通常是网络/registry 问题），环境不含主机变量，PATH 不含相对路径。空 diff、改禁止路径会判 FAIL 并重试；删测试/加 skip/减少用例、改测试框架或验收命令引用的脚本、改 `package.json` 的 scripts 判为篡改，**不重试**。任务本来就要改测试框架时，在 front matter 写 `allow_harness_changes: true`。
 - `# Forbidden`：额外禁止事项。
 - 不要在任务书里写任何密钥、token、内部 URL。
 - 一个任务 ≈ 一个可独立验收的改动。大需求拆成多个任务放进同一批。

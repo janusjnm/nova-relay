@@ -1,6 +1,6 @@
 # 配置参考
 
-位置：`$NOVA_RELAY_CONFIG`，默认 `~/.config/nova-relay/config.json`。纯 JSON。启动时完整校验，任何错误都会带字段路径列出并以退出码 3 拒绝运行（`nova-relay config-check`）。完整示例：[config/nova-relay.example.json](../config/nova-relay.example.json)。
+位置：`$NOVA_RELAY_CONFIG`，默认 `~/.config/nova-relay/config.json`。纯 JSON。启动时完整校验，任何错误都会带字段路径列出并以退出码 3 拒绝运行（`nova-relay config-check`）。**任何一层出现未知的键都是错误**（顶层、`hosts.*`、`limits`、`guard`、`routing`、`routing.rules[*]`、`webhook`、`projects.*`、`executors.*` 按适配器），拼写错误不会悄悄回落到更弱的默认值（例如 `forbiden_paths`、`protected_branch`、`budgt`）。以 `_` 或 `$` 开头的键视为注释（如 `"_comment": "..."`）。完整示例：[config/nova-relay.example.json](../config/nova-relay.example.json)。
 
 ## 顶层
 
@@ -13,7 +13,7 @@
 | `display_tz` | `Asia/Singapore` | 报告显示时区（内部一律 UTC） |
 | `hosts.<name>.ssh` | — | 远端主机必填：Tailscale MagicDNS 名或 ssh 别名 |
 | `hosts.<name>.bin` | `nova-relay` | 远端 nova-relay 路径 |
-| `hosts.<name>.role` | — | `box` / `vps`；`claude` 只能在 `role: box` 的主机上 |
+| `hosts.<name>.role` | — | `box` / `vps`（其他值校验失败）；`claude` 只能在 `role: box` 的主机上 |
 | `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避 |
 | `webhook` | — | 全局默认 webhook（`url_env`、`key_env`），项目可覆盖 |
 
@@ -42,7 +42,7 @@
 
 `budget`（按 UTC 日）：`segments_per_day`、`minutes_per_day`、`tokens_per_day`、`cost_usd_per_day`。超出 → 执行者暂停到下一个 UTC 零点。
 
-`limits`、`executors.<name>.limits`、`budget` 里**未知的键**（拼写错误，如 `segment_minuts`）与 `projects.<P>.executors` 里不存在的执行者都会让配置校验失败，而不是悄悄回落到默认值。
+`limits`、`executors.<name>.limits`、`budget` 以及其他各层里**未知的键**（拼写错误，如 `segment_minuts`），与 `projects.<P>.executors` 里不存在的执行者，都会让配置校验失败，而不是悄悄回落到默认值。执行者只接受公共字段加上本适配器的字段（下表），例如给 `codex` 写 `permission_mode` 会报错。
 
 | adapter | 额外字段 | 固定行为 |
 |---|---|---|
@@ -98,8 +98,8 @@
 | `env_file` | 项目私有 env，**必须 0600**（否则任务 `blocked`），只注入本项目任务与验收命令，值也会被脱敏 |
 | `webhook` | `{ "url_env": "...", "key_env": "..." }` —— 只写**变量名** |
 | `checks` | 每个任务都要跑的验收命令（追加在任务书验收命令之后） |
-| `acceptance_setup` | 可选：验收前在**干净检出**里先跑的命令（如 `npm ci`、`pip install -e .`）。验收不在执行者的 worktree 里跑，被 gitignore 的依赖目录不存在，需要在这里装 |
-| `acceptance_env_pass` | 可选：额外传给验收命令的主机环境变量名（如 `GOCACHE`、`npm_config_cache`）。看起来像密钥的名字（`*_KEY`、`*_TOKEN`、`SECRET`…）会被配置校验拒绝；项目密钥请放 `env_file` |
+| `acceptance_setup` | 可选：验收前在**干净检出**（独立的临时 clone）里先跑的命令（如 `npm ci`、`pip install -e .`）。验收不在执行者的 worktree 里跑，被 gitignore 的依赖目录不存在，需要在这里装。HOME 是空的（没有 `~/.npmrc`、没有包缓存），所以通常需要网络；失败 → `FAIL setup:<命令>: …`，任务 `failed` 并唤醒，**不**交给执行者重试。想复用主机缓存可在 `acceptance_env_pass` 里传 `npm_config_cache`、`PIP_CACHE_DIR`、`GOMODCACHE` 等。setup 里的 git 命令（如 husky 的 `git config core.hooksPath`）只影响临时 clone |
+| `acceptance_env_pass` | 可选：额外传给验收命令的主机环境变量名（如 `GOCACHE`、`GOMODCACHE`、`npm_config_cache`、`PIP_CACHE_DIR`、`PIP_INDEX_URL`）。看起来像密钥的名字（`*_KEY`、`*_TOKEN`、`SECRET`…）和配置里声明的密钥变量名（`webhook.url_env/key_env`、执行者 `key_env`）会被配置校验拒绝；`secrets.env` 里的名字即使列出也不会传入；项目密钥请放 `env_file` |
 | `harness_paths` | 可选：额外的"验收/测试框架"文件 glob；改动它们 = 篡改（见 security.md） |
 | `forbidden_paths` | 任何任务都不能改的 glob（默认 `.git/**`、`.github/workflows/**`、`**/.env`、`**/.env.*`） |
 | `executors` | 可选，执行者白名单 |

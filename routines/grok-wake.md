@@ -44,6 +44,8 @@ webhook payload 只有：
       - 抽查无误后运行：nova-relay ack <BATCH_ID> --owner <OWNER>
       - 对 failed 任务：不要自动重派。说明原因，询问用户是否调整任务书后重新 dispatch。
       - 若某任务 verdict 是 FAIL integrity:.git/…：执行者改动了仓库共享的 .git/config、.git/hooks 或 .git/info。明确告诉用户：检查这些之前不要在该仓库运行任何 git 命令；你自己也不要运行。
+      - 若 verdict 是 FAIL setup:…：验收前的依赖安装（acceptance_setup，如 npm ci）失败，通常是网络/registry/工具链问题，或任务改坏了依赖清单。不是执行者能重试修好的测试失败；把最后一行原样告诉用户，请用户检查网络或依赖后再决定是否重新 dispatch。
+      - 若 verdict 是 FAIL integrity:refs：验收命令运行期间任务分支被移动（测试代码改了共享仓库），按篡改处理。
       - 若 verdict 是 FAIL integrity:head / integrity:history / harness:… / tests-removed / tests-deleted / tests-skipped / symlink-…：这是篡改验收（移走分支、改写历史、改测试框架或验收脚本、删/跳过测试、符号链接），nova-relay 不会自动重试。如实告诉用户是哪个文件，不要替执行者"修好"后宣称通过。
 
 3. 铁律：
