@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Thin wrapper so `nova-relay` works from PATH and over `ssh host nova-relay ...`.
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+export PATH="$HOME/.local/bin:$PATH"
+exec node "$here/nova-relay.mjs" "$@"
