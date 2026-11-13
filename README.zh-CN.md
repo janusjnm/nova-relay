@@ -131,6 +131,8 @@ nova-relay ack b-… --owner grok-pd
 npm test     # node --test，无第三方依赖，Node >= 22
 ```
 
+测试会从子进程/测试上下文的环境中剥离 `NOVA_RELAY_HOME`、`NOVA_RELAY_CONFIG`、`NOVA_RELAY_SECRETS`、`NOVA_RELAY_HOST` 等 `NOVA_*` 变量、webhook/密钥类变量和执行者提供商变量（`tests/helpers.mjs` 的 `isolatedEnv`），只设置临时配置所需的值。此前在导出了运维 home 的 shell 里跑 `npm test` 并不安全：CLI 测试会把批次、任务和待发 webhook 写进该 home。现在已修复，但测试仍不是沙箱——请勿在生产主机上用真实密钥跑测试。
+
 代码结构：`lib/executors/*.mjs`（每个执行者一个文件，新增执行者 = 加一个文件 + 注册一行）、`lib/runner.mjs`（分段循环）、`lib/relay.mjs`（批次/worker/续跑/tick/gc）、`lib/acceptance.mjs`、`lib/guard.mjs`、`lib/notify.mjs`（唤醒规则 + outbox）、`lib/doctor.mjs`。
 
 ## 许可

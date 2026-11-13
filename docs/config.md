@@ -9,7 +9,7 @@
 | `schema` | `1` | 配置版本；比本程序新则拒绝 |
 | `self` | `"local"` | 本机在 `hosts` 中的名字；可被 `NOVA_RELAY_HOST` 覆盖 |
 | `coordinator` | `self` | 保存批次视图并发送 webhook 的主机（建议常开的 VPS） |
-| `home` | `~/.nova-relay` | 任务库目录；可被 `NOVA_RELAY_HOME` 覆盖 |
+| `home` | `~/.nova-relay` | 任务库目录；可被 `NOVA_RELAY_HOME` 覆盖（测试套件会剥离该变量，见 README「开发」） |
 | `display_tz` | `Asia/Singapore` | 报告显示时区（内部一律 UTC） |
 | `hosts.<name>.ssh` | — | 远端主机必填：Tailscale MagicDNS 名或 ssh 别名 |
 | `hosts.<name>.bin` | `nova-relay` | 远端 nova-relay 路径 |

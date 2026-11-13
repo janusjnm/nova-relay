@@ -144,11 +144,16 @@ A small, config-driven relay between a planner and coding executors:
 - Tombstones (one small file plus a directory per fenced or gc'd task, one file per gc'd batch) are
   kept forever; the task directory count only grows.
 - `dispatch` without `--key` is not idempotent: a blind retry creates a second batch.
+- Test isolation is env hygiene, not a sandbox. The suite strips operator `NOVA_*`, webhook/secret and
+  provider vars from spawned CLIs and test contexts (earlier drafts did not: `npm test` with an
+  operator `NOVA_RELAY_HOME` exported wrote test batches, tasks and pending webhooks into that home),
+  but tests still run as your user with your HOME; do not run them on a production host.
 - Not protected against disk loss or a host that never comes back.
 
 ### Verified vs. still to verify on real machines
 
-- Verified locally: the full test suite (`npm test`, 166 tests); `install.sh` run twice into an
+- Verified locally: the full test suite (`npm test`, 167 tests), also with `NOVA_RELAY_HOME` /
+  `NOVA_RELAY_CONFIG` / `NOVA_RELAY_SECRETS` exported to an unused canary path that stayed empty; `install.sh` run twice into an
   isolated temporary HOME; Claude Code 2.1.308 flags and hook (live, earlier review); codex-cli 0.169.0
   and pi 1.5.2 flags/event envelopes against the real CLIs without login (fixtures in
   `tests/fixtures/cli/`).

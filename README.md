@@ -88,6 +88,13 @@ nova-relay ack <batch> --owner grok-pd
 npm test   # node --test, zero dependencies, Node >= 22
 ```
 
+The suite strips `NOVA_RELAY_HOME`, `NOVA_RELAY_CONFIG`, `NOVA_RELAY_SECRETS`, `NOVA_RELAY_HOST` and other
+`NOVA_*` vars, webhook/secret-looking vars and executor provider vars from the env it gives spawned
+CLIs and test contexts (`isolatedEnv` in `tests/helpers.mjs`), then sets only its temp values. Before
+this, running `npm test` in a shell with an operator home exported was unsafe: CLI tests wrote
+batches, tasks and pending webhooks into that home. The tests are still not a sandbox; do not run them
+on a production host with live keys loaded.
+
 ## License
 
 MIT, upstream copyright lines retained — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
