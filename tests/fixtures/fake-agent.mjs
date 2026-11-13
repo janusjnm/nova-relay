@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const mode = process.env.FAKE_MODE || "ok";
 if (args[0] === "--version") { console.log(mode === "oldversion" ? "0.0.1 (fake)" : "9.9.9 (fake)"); process.exit(0); }
 if (args.includes("--help")) {
-  const flags = "--print --output-format --verbose --resume --session-id --settings --setting-sources --strict-mcp-config --permission-mode --allowedTools --disallowedTools --provider --model --tools --no-session --extension --sandbox --output-last-message --cd --skip-git-repo-check --json";
+  const flags = "--print --output-format --verbose --resume --session-id --settings --setting-sources --strict-mcp-config --permission-mode --allowedTools --disallowedTools --provider --model --tools --no-session --extension --sandbox --output-last-message --cd --skip-git-repo-check --json --ignore-user-config --ignore-rules --no-extensions --no-approve --no-mcp";
   console.log(mode === "badflags" ? "--print --output-format" : flags);
   process.exit(0);
 }
@@ -30,6 +30,7 @@ if (args[0] === "exec") {
   const out = args[args.indexOf("--output-last-message") + 1];
   const ev = (o) => console.log(JSON.stringify(o));
   const cmode = process.env.FAKE_CODEX_MODE || "ok";
+  if (cmode === "plain") { write("src/hello.txt", "hello\n"); writeFileSync(out, "done"); console.log("plain text, no events"); process.exit(0); }
   ev({ type: "thread.started", thread_id: "th-1" });
   if (cmode === "audit") ev({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "bash -lc 'git push origin main'", exit_code: 1 } });
   ev({ type: "item.completed", item: { id: "i2", type: "command_execution", command: "bash -lc 'npm test'", exit_code: 0 } });

@@ -45,7 +45,7 @@
       "host": "vps",
       "bin": "pi",
       "provider": "deepseek",
-      "model": "deepseek-chat",
+      "model": "deepseek-flash",
       "key_env": "DEEPSEEK_API_KEY",
       "budget": { "segments_per_day": 80 },
       "limits": { "idle_timeout_sec": 600 }
@@ -53,7 +53,7 @@
     "deepseek-text": {
       "adapter": "deepseek-text",
       "host": "vps",
-      "model": "deepseek-chat",
+      "model": "deepseek-flash",
       "key_env": "DEEPSEEK_API_KEY",
       "budget": { "tokens_per_day": 2000000 }
     }

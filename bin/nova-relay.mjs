@@ -2,11 +2,12 @@
 // nova-relay — planner/executor relay CLI. Node >= 22, no dependencies. See docs/cli.md.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { ConfigError, configPath, loadConfig, loadSecrets } from "../lib/config.mjs";
+import { ConfigError, configPath, loadConfig, loadSecrets, projectPaths, readSecretEnvFile } from "../lib/config.mjs";
 import { HANDLERS, dispatch, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
 import { call } from "../lib/rpc.mjs";
 import { doctor } from "../lib/doctor.mjs";
 import { accept } from "../lib/acceptance.mjs";
+import { acceptanceEnv } from "../lib/runner.mjs";
 import { parseBrief, BRIEF_TEMPLATE } from "../lib/brief.mjs";
 import { unpauseExecutor } from "../lib/budget.mjs";
 import { VERSION } from "../lib/util.mjs";
@@ -125,7 +126,11 @@ async function main() {
       const id = need(pos[0], "task id");
       const t = ctx.store.get(id);
       if (!t?.worktree) { console.error(`${id}: no worktree (text task or not started); see result.md`); return process.exit(2); }
-      const r = accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project: cfg.projects[t.project] });
+      // Same conditions as the runner: repo-controlled commands never see host secrets.
+      const project = cfg.projects[t.project];
+      const projectEnv = project.env_file ? readSecretEnvFile(project.env_file) : {};
+      const r = accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project,
+        env: acceptanceEnv(ctx, projectEnv), repo: projectPaths(cfg, t.project).repo, integrity: t.integrity });
       out(r.line);
       return process.exit(r.pass ? 0 : 1);
     }
