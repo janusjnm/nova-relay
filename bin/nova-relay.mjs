@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, configPath, loadConfig, loadSecrets, projectPaths, readSecretEnvFile } from "../lib/config.mjs";
-import { HANDLERS, dispatch, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
+import { HANDLERS, KeyConflictError, abandonWarning, batchOutcome, dispatch, dispatchExitCode, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
 import { call } from "../lib/rpc.mjs";
 import { doctor } from "../lib/doctor.mjs";
 import { accept } from "../lib/acceptance.mjs";
@@ -15,10 +15,13 @@ import { VERSION } from "../lib/util.mjs";
 const USAGE = `nova-relay ${VERSION}
 
 planner (Grok) commands
-  dispatch --project P [--owner O] <brief.md>... | -     create a batch, start workers, print batch id
+  dispatch --project P [--owner O] [--key K] [--json] <brief.md>... | -
+                                                         create (or with --key: create-or-resume) a batch;
+                                                         exit 0 delivered, 75 delivery unknown (retry with
+                                                         the SAME --key), 1 not delivered, 4 key conflict
   pending [--owner O]                                    batches that need the planner (one line each)
   verdict <batch>                                        one-line verdict: PASS|FAIL|WAIT n/m | details
-  batch <batch> [--json]                                 per-task view of a batch
+  batch <batch> [--json]                                 per-task view of a batch (--json adds "outcome")
   status <task> [--json]   log <task> [-n N]             task detail / recent events
   approve <task> <req> [--owner O]   deny <task> <req> [--owner O]
   ack <batch> [--owner O]                                acknowledge after spot-checking (enables cleanup)
@@ -26,6 +29,8 @@ planner (Grok) commands
 
 operator commands
   doctor [--no-remote] [--live]   config-check   unpause <executor>   accept <task>
+  abandon <batch> --host H [--owner O] [--yes] [--json]  give up on a host's unresolved entries (never
+                           automatic; does NOT stop remote work; without --yes: dry run)
   worker [--once]          resume --all     tick     watchdog     heartbeat
   outbox [--flush]         gc               rpc <method> (JSON on stdin; used over ssh)
   (--flush also retries dead letters; --live makes doctor do real login/key checks, opt-in)
@@ -33,7 +38,7 @@ config: $NOVA_RELAY_CONFIG or ~/.config/nova-relay/config.json`;
 
 function parseArgs(argv) {
   const pos = [], flags = {};
-  const VALUE = new Set(["project", "owner", "n"]);
+  const VALUE = new Set(["project", "owner", "n", "key", "host"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) { const k = a.slice(2); if (VALUE.has(k)) flags[k] = argv[++i]; else flags[k] = true; }
@@ -85,11 +90,19 @@ async function main() {
       const project = need(flags.project, "--project");
       const files = need(pos.length ? pos : null, "brief files");
       const briefs = files.map((f) => ({ name: f === "-" ? "stdin" : basename(f), text: f === "-" ? readStdin() : readFileSync(f, "utf8") }));
-      const r = await dispatch(ctx, { project, owner: flags.owner, briefs });
-      out(`batch ${r.batch}`);
-      for (const t of r.tasks) out(`  ${t.id} ${t.name} → ${t.executor}@${t.host}${t.rerouted ? " (rerouted: primary paused)" : ""}`);
+      let r;
+      try { r = await dispatch(ctx, { project, owner: flags.owner, briefs, key: typeof flags.key === "string" ? flags.key : undefined }); } catch (e) {
+        if (!(e instanceof KeyConflictError)) throw e;
+        if (flags.json) out({ error: e.message, status: "key_conflict" }); else console.error(`nova-relay: ${e.message}`);
+        return process.exit(4);
+      }
+      const code = dispatchExitCode(r);
+      if (flags.json) { out({ ...r, exit_code: code }); return process.exit(code); }
+      out(`batch ${r.batch}${r.created ? "" : " (existing: same --key)"}`);
+      for (const t of r.tasks) out(`  ${t.id} ${t.name} → ${t.executor}@${t.host}${t.rerouted ? " (rerouted: primary paused)" : ""}${r.outcome?.tasks[t.id] ? ` [${r.outcome.tasks[t.id].delivery}]` : ""}`);
+      if (r.outcome) out(`outcome ${r.outcome.status} | ${r.outcome.line}`);
       for (const e of r.errors) console.error(`submit error: ${e}`);
-      return process.exit(r.errors.length ? 1 : 0);
+      return process.exit(code);
     }
     case "pending": {
       for (const b of await coord("pending", { owner: flags.owner })) out(b.line);
@@ -98,7 +111,7 @@ async function main() {
     case "verdict": return out(verdictLine(await coord("batch-status", { batch: need(pos[0], "batch id") })));
     case "batch": {
       const b = await coord("batch-status", { batch: need(pos[0], "batch id") });
-      if (flags.json) return out(b);
+      if (flags.json) return out({ ...b, outcome: batchOutcome(b) });
       out(`${verdictLine(b)}\nproject ${b.project} owner ${b.owner} created ${showTime(ctx, b.created_at)}${b.acked ? " (acked)" : ""}`);
       for (const [id, t] of Object.entries(b.tasks)) out(`  ${id} ${t.state} ${t.executor}@${t.host} ${t.verdict || ""} ${t.reason ? `(${t.reason})` : ""}`);
       return;
@@ -120,6 +133,15 @@ async function main() {
     case "approve": case "deny": {
       const [id, req] = [need(pos[0], "task id"), need(pos[1], "req")];
       return out(await onTaskHost(ctx, id, cmd, { id, req, owner: flags.owner }));
+    }
+    case "abandon": {
+      const batch = need(pos[0], "batch id"), host = need(typeof flags.host === "string" ? flags.host : null, "--host");
+      const r = await coord("abandon", { batch, host, owner: flags.owner, confirm: Boolean(flags.yes) });
+      console.error(r.warning || abandonWarning(host));
+      if (flags.json) return out(r);
+      if (r.dry_run) return out(`DRY RUN (add --yes): would abandon on ${host}: ${r.would_abandon.join(", ")}`);
+      if (!r.abandoned.length) return out(r.note);
+      return out(`abandoned on ${host}: ${r.abandoned.join(", ")}\nremote cancel: ${r.remote_cancel}\n${r.line}`);
     }
     case "cancel": { const id = need(pos[0], "task id"); return out(await onTaskHost(ctx, id, "cancel", { id, owner: flags.owner })); }
     case "accept": {
