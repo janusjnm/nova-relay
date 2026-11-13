@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Default Pi call: deepseek-flash + high thinking + read/write/exec tools.
-# Usage: pi-run <cwd> "<prompt>" [--session <name>] [--timeout sec] [--verbose]
-here="$(cd "$(dirname "$0")" && pwd)"
-export PATH=$HOME/.local/bin:$PATH
-dir="$1"; shift; prompt="$1"; shift
-exec "$here/pi-call.mjs" "$dir" deepseek/deepseek-flash "$prompt" --allow-write --thinking high "$@"
