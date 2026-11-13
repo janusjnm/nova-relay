@@ -28,7 +28,8 @@ nova-relay brief-template > /tmp/nova-<short>.md
 nova-relay dispatch --project <PD|NM> --owner <OWNER> /tmp/nova-a.md /tmp/nova-b.md
 ```
 
-- 输出 `batch b-…` 与每个任务的执行者。若报 `invalid brief` 或路由错误，修正后重试。
+- 输出 `batch b-…` 与每个任务的执行者。若报 `invalid brief` 或路由错误（此时没有批次），修正后重试。
+- 若输出了 `batch b-…` 又有 `submit error: …`：批次已经登记，**不要重新 dispatch**（会重复干活）。主机可能其实已经收到任务；nova-relay 会确认，没送达的任务在批次里显示为 `FAIL submit`，批次结束时照常唤醒你。把错误原样告诉用户，然后结束本轮。
 - 告诉用户：批次 ID、任务数、各自执行者、"完成后我会被唤醒并汇报"。然后结束本轮。
 
 ## 3. 被唤醒后

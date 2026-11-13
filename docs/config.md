@@ -14,7 +14,7 @@
 | `hosts.<name>.ssh` | — | 远端主机必填：Tailscale MagicDNS 名或 ssh 别名 |
 | `hosts.<name>.bin` | `nova-relay` | 远端 nova-relay 路径 |
 | `hosts.<name>.role` | — | `box` / `vps`（其他值校验失败）；`claude` 只能在 `role: box` 的主机上 |
-| `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避 |
+| `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避。异步运行（≤120 s，超时算失败），期间租约照常续期；取消任务会杀掉它且不记录结论 |
 | `webhook` | — | 全局默认 webhook（`url_env`、`key_env`），项目可覆盖 |
 
 ## `limits`（全局默认，可在 `executors.<name>.limits` 覆盖）

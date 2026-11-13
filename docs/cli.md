@@ -7,7 +7,7 @@
 | 命令 | 说明 |
 |---|---|
 | `nova-relay brief-template` | 打印任务书模板 |
-| `nova-relay dispatch --project P [--owner O] a.md b.md …` | 校验任务书 → 路由 → 在 coordinator 登记批次 → 提交到各执行主机并启动 worker；打印 `batch <id>` 与每个任务的执行者。**立即返回**，Grok 随即结束本轮 |
+| `nova-relay dispatch --project P [--owner O] a.md b.md …` | 校验任务书 → 路由 → 在 coordinator 登记批次（任务先是 `submitting`）→ 提交到各执行主机并启动 worker；打印 `batch <id>` 与每个任务的执行者。**立即返回**，Grok 随即结束本轮。有 `submit error:` 时退出码 1，但批次已经登记：送达与否由主机 fence 确认（见 failure-modes 5b），没送达的任务会以 `FAIL submit` 出现在批次里——**不要重新 dispatch 同样的任务书** |
 | `nova-relay pending [--owner O]` | 需要处理的批次，每批一行（为空 = 无事可做，保持安静） |
 | `nova-relay verdict <batch>` | 一行结论：`batch <id> PASS\|FAIL\|WAIT done/total \| <非 done 任务…>` |
 | `nova-relay batch <batch> [--json]` | 每个任务的状态、执行者、verdict、原因 |
@@ -40,4 +40,4 @@
 
 ## 任务状态
 
-`queued` → `running` → `done` / `failed` / `cancelled`（终态）；中间态 `paused`（额度/预算/网络退避，自动继续）；需要人：`needs_approval`、`needs_auth`、`blocked`；`moved`：本机副本已交接给另一台主机（额度改路由），以那台主机上的状态为准。
+批次视图里还有 `submitting`：已登记、尚未确认送达执行主机（非终态，批次显示 WAIT）。任务：`queued` → `running` → `done` / `failed` / `cancelled`（终态）；中间态 `paused`（额度/预算/网络退避，自动继续）；需要人：`needs_approval`、`needs_auth`、`blocked`；`moved`：本机副本已交接给另一台主机（额度改路由），以那台主机上的状态为准。

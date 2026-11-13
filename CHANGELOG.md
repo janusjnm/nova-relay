@@ -58,8 +58,20 @@ A small, config-driven relay between a planner and coding executors:
 - State on disk with atomic writes; a journal with sequence numbers replayed after a crash; one
   worker per host; leases stolen only under a lock with a re-check (two watchdogs cannot both resume
   a task); orphaned executor process groups killed before a resume.
-- Long acceptance runs do not starve lease renewal (acceptance commands run asynchronously). A cancel
-  or a lost lease during acceptance kills the commands and records no verdict.
+- Long acceptance runs, `preflight_cmd` and the CLI contract checks (`--version` / `--help`) do not
+  starve lease renewal (they run asynchronously). A cancel or a lost lease during any of them kills
+  the command and records no verdict, failure count, pause or cached contract result.
+- Dispatch delivery is reconciled, not guessed. Batch entries start as `submitting` (not terminal,
+  no wake). A submit that times out or loses its reply makes the host *fence* each id under the task
+  lock: an existing task reports its real state; an absent id is tombstoned, so a late or retried
+  submit is refused, and only that becomes `FAIL submit`. While the host is unreachable the batch
+  stays WAIT (`ack` refused) and the coordinator tick keeps reconciling (after a 10-minute grace
+  period if the dispatcher itself died). `dispatch` still exits 1 on a `submit error:`, but the batch
+  exists: do not re-dispatch.
+- Short file locks: a dead holder's lock is stolen only by the racer that creates a per-instance
+  steal token and re-reads the lock, so a racer with a stale view cannot move a live holder's lock
+  aside. Checked with forced interleavings and a multi-process stress test with injected delays and
+  killed holders.
 - Bounded work: segment wall-clock and idle caps, task run-time cap, max segments, max local retries,
   max segment failures, max quota pauses, and daily budgets per executor. No infinite loops.
 - Webhooks: payload is only `{source,batch,id,state,exit_code}`; URL and key come from env vars only;
@@ -88,17 +100,23 @@ A small, config-driven relay between a planner and coding executors:
   high-risk projects. Codex is audited after the fact, not blocked beforehand. Known gaps are listed
   in [docs/security.md](docs/security.md).
 - Tamper checks do not detect weakened assertions; spot-check test diffs.
+- Timeout-based locks and leases: a holder that is alive but makes no progress for more than 120 s
+  (same host; 60 s across hosts) inside a millisecond critical section — e.g. SIGSTOP or a suspend
+  at exactly that moment — is treated as dead and its lock can be taken while it still runs.
+- A batch whose task host never comes back stays `submitting` / WAIT; nothing marks it failed on a
+  guess.
 - Not protected against disk loss or a host that never comes back.
 
 ### Verified vs. still to verify on real machines
 
-- Verified locally: the full test suite (`npm test`, 134 tests); `install.sh` run twice into an
+- Verified locally: the full test suite (`npm test`, 147 tests); `install.sh` run twice into an
   isolated temporary HOME; Claude Code 2.1.308 flags and hook (live, earlier review); codex-cli 0.169.0
   and pi 1.5.2 flags/event envelopes against the real CLIs without login (fixtures in
   `tests/fixtures/cli/`).
 - **Must be tested in place** (checklist at the end of [docs/failure-modes.md](docs/failure-modes.md)):
   real sleep / reboot / Tailscale loss and the resume timing after a human wakes the box; whether the
   Grok platform handles a `box_unreachable` webhook while the box is asleep; webhook delivery to the
-  real Grok routine; Codex logged in (command events in the audit); pi with a real DeepSeek key and the
+  real Grok routine; a dispatch whose ssh session drops mid-submit (batch stays WAIT, then reconciles);
+  Codex logged in (command events in the audit); pi with a real DeepSeek key and the
   model id you chose (`doctor --live`, then one small task); cross-host quota reroute over real ssh;
   `acceptance_setup` timing and network needs on your real projects.
