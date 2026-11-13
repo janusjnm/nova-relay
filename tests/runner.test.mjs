@@ -81,6 +81,17 @@ test("auth failure → needs_auth, executor paused, exactly one wake", async () 
   assert.equal(ctx.sent[0].body.state, "needs_auth");
 });
 
+test("auth incident: several tasks hit the same logged-out executor → still one wake", async () => {
+  const { root, repo } = tempRepo();
+  const ctx = testContext(testConfig(root, repo), { FAKE_MODE: "auth" });
+  const briefs = ["a", "b", "c"].map((n) => ({ name: n, text: BRIEF().replace("- src/**", `- src/${n}/**`) }));
+  await dispatch(ctx, { project: "PD", owner: "grok", briefs });
+  await worker(ctx, { once: true });
+  await worker(ctx, { once: true });
+  assert.equal(ctx.store.list().filter((t) => t.state === "needs_auth").length, 3);
+  assert.equal(ctx.sent.filter((s) => s.body.state === "needs_auth").length, 1);
+});
+
 test("CLI flag removed: preflight contract → blocked + wake; adapter rejected flag at run → blocked", async () => {
   const a = await runOne("badflags");
   assert.equal(a.t.state, "blocked");
