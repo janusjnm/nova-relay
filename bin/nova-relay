@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Thin wrapper so `nova-relay` works from PATH, over `ssh host nova-relay ...` and from systemd.
+# Non-interactive ssh and systemd user units get a minimal PATH, so the Node.js binary recorded
+# by install.sh (bin/.node-path) is preferred; executor CLIs in ~/.local/bin and the directory of
+# that Node (npm -g installs of codex/pi) are added to PATH.
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+node_bin="node"
+if [ -r "$here/.node-path" ]; then
+  recorded="$(cat "$here/.node-path")"
+  [ -x "$recorded" ] && node_bin="$recorded"
+fi
+if [ "$node_bin" != "node" ]; then export PATH="$(dirname "$node_bin"):$PATH"; fi
+export PATH="$HOME/.local/bin:$PATH"
+exec "$node_bin" "$here/nova-relay.mjs" "$@"

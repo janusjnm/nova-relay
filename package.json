@@ -1,0 +1,11 @@
+{
+  "name": "nova-relay",
+  "version": "0.1.0",
+  "description": "Planner/executor relay: Grok Bot plans, Claude Code / Codex / Pi / DeepSeek execute, acceptance decides.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "bin": { "nova-relay": "bin/nova-relay.mjs" },
+  "scripts": { "test": "node --test tests/*.test.mjs" }
+}

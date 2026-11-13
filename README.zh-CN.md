@@ -1,214 +1,146 @@
-<p align="center">
-  <img src="docs/logo.png" alt="GAP logo" width="128">
-</p>
+# nova-relay
 
-<h1 align="center">GAP — Grokbot And Pi</h1>
+[English](README.md) | **中文（主文档）**
 
-[English](README.md) | 简体中文
+nova-relay 是一个小而可插拔的「规划者 → 执行者」中继：
 
-让 Grok Bot 把繁重的代码编写、文件批量修改、长文档整理等执行活派给同机运行的 **Pi coding agent**（[pi.dev](https://pi.dev)）作为 subagent，把 Grok Bot 宝贵的额度集中在意图规划与结果验收上。
+- **规划者（Planner）= Grok Bot**，跑在一台空闲时可能睡眠的 Linux「box」上。Grok 只负责写一份模板化的**任务书**（目标、文件范围、验收命令、禁止事项），派发后**立即结束本轮**；每个批次（batch）结束时只被唤醒一次，读一行结论（verdict），抽查，然后 `ack`。
+- **执行者（Executor）** 是可插拔的适配器，由配置里的路由规则按任务类型选择：
+  | 执行者 | 实现 | 运行位置 | 用途 |
+  |---|---|---|---|
+  | `claude` | 官方 Claude Code CLI `claude -p`，订阅登录 | **只在 box** | 长任务；按 10–15 分钟分段，`--resume` 续跑 |
+  | `codex` | 官方 Codex CLI `codex exec`，ChatGPT 订阅登录 | 常开 VPS / mm01 | 常规代码任务 |
+  | `pi` | Pi coding agent（pi.dev）+ DeepSeek API key | VPS / mm01 | 多步代码修改 |
+  | `deepseek-text` | 直接调用 DeepSeek API | VPS / mm01 | 纯文本（文案、翻译、摘要），无 shell |
+- **验收脚本是唯一的真相**：跑测试/类型检查/lint/diffstat，只输出一行 `PASS` 或 `FAIL <位置>`。执行者自己说"完成了"一律不算。
 
----
+> 本项目改写自 GAP / grokbot-and-pi（MIT），后者基于 robbin/grokbot-local-agent。见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## 为什么需要 GAP？
-
-- **节省 Grok Bot 昂贵额度**：平台对话配额昂贵，最适合用来做需求梳理、任务拆解与代码审查。将需要反复读文件、改代码、跑测试的多步执行活交给 Pi，消耗你自己配置的模型额度（官方 API Key、第三方中转站、Pi 默认自带额度，或私有部署的网关）。
-- **同机执行，速度快且无跨网开销**：Pi 直接运行在 Grok Bot 所在的云端 Linux 电脑上，直接读写本地文件与执行 bash，省去跨机器同步文件的复杂性。
-- **高韧性追踪与严格验收**：无人值守的 coding agent 可能遇到机器休眠、网络中断或幻觉。GAP 提供了持久化任务管理（`pi-task`）、睡醒断网预检重连、空闲超时熔断、防删库扩展（`pi-guard`）以及人工审批闭环机制。
-
----
-
-## 架构与闭环工作流
-
-### 一图看懂
-
-<p align="center">
-  <img src="docs/workflow.jpg" alt="Bot 派活、等待、验收，Webhook 兜底" width="420">
-</p>
-
-### 架构
+## 架构
 
 ```mermaid
 flowchart LR
-  U(["你"]) -->|对话| B
-  subgraph BOX["Bot 的电脑（共用 Linux 机器）"]
-    B["Grok Bot<br/>规划 + 验收"]
-    T["pi-task<br/>任务管理"]
-    PF["pi-preflight<br/>模型通路预检"]
-    G["pi-guard<br/>拦删库跑路"]
-    P["Pi coding agent<br/>干活"]
-    D[("~/.pi/tasks/ID<br/>状态、事件、result.md")]
-    B -->|"1. run --owner"| T
-    T -->|先预检| PF
-    T -->|RPC 会话| P
-    P -.->|每次工具调用| G
-    T -->|落盘| D
-    B -->|"2. 本轮等待"| T
-    D -->|"3. pending、验收、ack"| B
+  subgraph BOX["box（可能睡眠）"]
+    G["Grok Bot<br/>写任务书 → dispatch → 结束本轮"]
+    NB["nova-relay (box)<br/>任务库 ~/.nova-relay"]
+    C["claude -p<br/>分段 + --resume"]
+    T1["tick 定时器<br/>心跳 / 续跑 / gc"]
+    G -->|dispatch| NB
+    NB -->|worktree nova/&lt;id&gt;| C
+    T1 --> NB
   end
-  P -->|调用模型| M["模型<br/>API key / 中转站 / 网关"]
-  T -.->|"跑完或 needs_approval<br/>（仅兜底）"| W["Webhook 例行任务"]
-  W -.->|唤醒| B
-  G -.->|被拦命令| U
+  subgraph VPS["VPS / mm01（常开）"]
+    NV["nova-relay (coordinator)<br/>批次视图 + outbox"]
+    X["codex exec"]
+    P["pi + DeepSeek"]
+    D["DeepSeek API（纯文本）"]
+    W["watchdog 定时器（5 分钟）"]
+    NV --> X & P & D
+    W --> NV
+  end
+  NB <-->|"ssh over Tailscale<br/>（rpc: submit / report / heartbeat / resume-all）"| NV
+  W -.->|"ssh resume-all（仅当 box 在运行）<br/>否则：记录 + 心跳缺失通知"| NB
+  NV -->|"webhook（仅 HTTPS / Tailscale）<br/>{source,batch,id,state,exit_code}"| R["Grok Routine<br/>（webhook 唤醒）"]
+  R --> G
 ```
 
-GAP 包含清晰的 4 步闭环：
+一个任务的生命周期：
 
-1. **Bot 派活（`pi-task run`）**：Grok Bot 编写简明且边界明确的任务书，通过后台模式启动 `pi-task run <工作目录> '<任务书>' --session <会话名> --owner <BOT_ID> --notify-prefix <BOT>`。
-2. **本轮长等待（防宿主机休眠冻结）**：Bot 派发后**不要结束当前轮次**。因为云端电脑在 Bot 空闲时容易睡眠或重启（导致后台 Pi 进程被冻住或杀掉），Bot 在本轮用一次长时间阻塞的等待（例如 `AwaitShell`，单次最长约 13 分钟）等 Pi 执行完毕。阻塞等待几乎不消耗 Bot 模型额度，同时能保持宿主机唤醒。
-3. **Webhook 唤醒兜底**：若由于不可抗力对话轮次提前结束，任务执行完毕或需要用户审批（`needs_approval`）时，`pi-task` 会在后台向设定的 Webhook 地址发起 HTTP POST 通知（仅包含 `{source, id, owner, state, exit_code}`，不含任务正文与敏感密钥），唤醒 Bot 的例行任务。
-4. **亲自核验与确认（Ack）**：Bot 检查 `~/.pi/tasks/<ID>/result.md`，亲自运行 git diff、产物检查或单元测试，将核验证据汇报给用户，验收合格后运行 `pi-task ack <ID> --owner <BOT_ID>` 确认完成。
+```mermaid
+stateDiagram-v2
+  [*] --> queued
+  queued --> running: worker 获取租约(lease)
+  running --> running: 分段到时 → checkpoint commit → 下一段
+  running --> paused: 额度/限流/预算（到重置时间后自动继续）
+  running --> queued: 额度/预算 + reroute_paused：同主机改用 fallback
+  running --> moved: 额度/预算 + reroute_paused=any：交接到另一台主机
+  paused --> queued: resume_after 到期
+  running --> needs_approval: guard 拦截 / 合并冲突（唤醒）
+  running --> needs_auth: 登录失效 / key 无效（唤醒一次）
+  running --> blocked: 磁盘满 / CLI 参数变化 / 守卫未生效（唤醒）
+  needs_approval --> queued: approve / deny
+  needs_auth --> queued: 重新登录后 unpause
+  running --> done: 验收 PASS 且可无冲突合并
+  running --> failed: 本地重试用尽 / 分段失败 >3 次（立即唤醒）/ 时长上限
+  done --> [*]
+  failed --> [*]
+```
 
-> **磁盘是唯一事实来源**：所有任务状态、事件流与最终产物均持久化保存在 `~/.pi/tasks/<ID>/`。Webhook 仅用于降低唤醒延迟；若网络抖动丢包，Bot 唤醒后运行 `pi-task pending --owner <BOT_ID>` 即可完整查回所有未报告的任务。
+## 关键设计
 
----
+| 主题 | 做法 |
+|---|---|
+| 真相来源 | 磁盘任务库 `~/.nova-relay/tasks/<id>/`：`brief.md`、`state.json`、`journal.jsonl`、`events.jsonl`、`progress.md`、`result.md`。原子写（tmp+rename）；`state.json` 损坏时用 journal 重放。 |
+| 批次与唤醒 | webhook **只在**：整个批次结束；某任务分段失败 >3 次；需要审批 / 需要登录 / 被阻塞。payload 只有 `{source,batch,id,state,exit_code}`，不含任务内容和密钥。去重键放在 `Idempotency-Key` 头。经持久化 outbox 按入队顺序发送、失败退避重试；不跟随重定向（3xx 留在 outbox），唤醒不会被悄悄送到别处。**按事故合并**：同一批次里多个任务因同一个执行者级原因被阻塞、或同一次网络事故导致升级，只唤醒一次（第一次立即发出）；主机不可达通知有冷却期（`notify_cooldown_minutes`，默认 60），链路抖动不会反复唤醒。 |
+| 分段 | 每段有墙钟上限（默认 12 分钟）和空闲超时；每段结束后由 nova-relay 在任务分支上 `git commit` 检查点，并把执行者的 PROGRESS 摘要写入 `progress.md`；下一段带「进度摘要」而非完整历史。 |
+| 本地重试 | 验收 FAIL 时把错误本身交给执行者重试，最多 `max_local_retries` 次再上报。 |
+| 隔离 | 每个任务一个 git worktree + 分支 `nova/<id>`；同项目文件范围重叠的任务不并发；PD / NM 等项目用各自的 repo、worktree 目录、env 文件、webhook、owner，路由拒绝跨项目路径。 |
+| 守卫 | `nova-guard`（原 pi-guard）：灾难删除、任何 `git push`、改 remote / git alias / hooksPath、发包、外发网络/消息、改主机配置、读凭据、写出 worktree / 禁止路径（含重定向、cp/mv/tee/rm/sed -i，符号链接解析后判断，目标无法解析默认拒绝；跟踪换目录：`cd`、`git -C/--git-dir/--work-tree`、`make -C`、`npm --prefix`、`env -C`、`tar -C`，目录解析不了默认拒绝；先解析 `env -i`、`nice -n`、`timeout`、`xargs`、`sudo`、`eval` 等包装命令的参数）、注入代码的环境变量（`PATH` 含执行者可写目录、`LD_*`、`NODE_OPTIONS`、`GIT_*`）、执行者可能写的脚本（shell、npm scripts、Makefile、python/node 等启发式扫描）→ 拦截并进入审批流程。Claude 用 PreToolUse hook（已在 Claude Code 2.1.308 实测；有工具调用但 hook 没被调用 = 守卫失效 → blocked），Pi 用扩展（加载时写标记；pi 以 `--no-extensions --no-approve --no-mcp` 运行，别的扩展无法在守卫放行后改写命令，未知工具一律拦截；已用 pi 1.5.2 实测）；Codex 没有前置 hook：`workspace-write` 沙箱（`--ignore-user-config --ignore-rules`，不加 `--trust`）+ 对 `--json` 事件中每条命令、文件改动、MCP 调用的事后审计（命中 → audit 审批；没有可解析事件 → blocked）+ 验收阶段检查。 |
+| 验收独立检查 | 执行者自述一律不作数。分段结束先杀残留后台进程、checkpoint 提交；任务书命令与项目 checks 在任务分支提交的**全新干净检出**（独立的临时 clone，detached、无 hook）里运行，执行者留下的未跟踪/被忽略文件不存在，setup/测试里的 git 命令（如 husky 的 `git config core.hooksPath`）改不到共享仓库；环境只有白名单变量 + 空 HOME + 私有 TMPDIR + 去掉相对/仓库内条目的 PATH + `bash --noprofile --norc`；命令异步运行，worker 期间照常续租，取消会杀掉验收命令。篡改**致命且不重试**：共享 `.git/config`/`hooks`/`info` 被改、HEAD 离开 `nova/<id>` 或历史被改写、删除/跳过/减少测试、改测试框架或验收命令引用的脚本或 `package.json` 的 scripts（任务书 `allow_harness_changes: true` 可放开）、越界或替换测试文件的符号链接、验收命令运行期间共享 `.git` 或任务分支被改。`acceptance_setup` 失败（registry/网络不通）→ `FAIL setup:…` 并升级，不交给执行者重试。禁止路径、范围、空 diff、命令失败带错误本地重试。 |
+| 模型名 | pi 与 deepseek-text **没有默认模型**，必须在配置里显式填写（示例配置是占位符，不改无法通过 `config-check`）；`doctor --live` 要求该 id 原样出现在 DeepSeek `GET /models` 里（列表读不到也算失败）；运行中供应商返回"模型不存在"→ 任务 `blocked`。绝不替换成别的 id。 |
+| 额度改路由 | 派发时主执行者暂停 → fallback；运行中的任务可按 `routing.reroute_paused` 在分段边界改路由（同主机原地切换，或跨主机用 git bundle 交接分支），默认关闭。 |
+| 并发 | 状态/批次/预算的读-改-写都在跨进程文件锁内。锁与租约记录持有者的**进程实例**（pid、启动时间、boot id），只有确定该实例已经不在（pid 不存在或被复用、僵尸、上一次开机）才会被接管；同主机上活着的持有者**不会因为锁/租约“太旧”被挤掉**，即使它被 SIGSTOP 或挂起——等待者超时报错（失败即停；Node 没有 flock，被停住的持有者会让该文件停住，直到它恢复或死掉）。抢占必须先拿到该锁实例专属的抢占令牌并重新确认，视图过时的抢占者不会挪走活着的持有者的锁。每台主机一个 worker；journal 带序号，崩溃后重放。`frozen` 只有在连续观察 3×TTL 仍不续租时才被杀（box 刚睡醒不会被误杀），而且要确认它和孤儿执行者进程组都已经死了才续跑；确认不了就保持 `running` 等人处理（用可用性换“绝不两个写者”）。 |
+| 恢复 | 分三件事：**检测**、**通知**、**主机恢复运行后续跑**。租约（lease）带 TTL，抢占在文件锁内重新检查后进行，两个 watchdog 不会重复续跑。检测：VPS watchdog 每 5 分钟尝试 `ssh box … resume-all`，连不上就记录 `unreachable_since`；box 运行时自己的定时器发现死掉/冻结的 worker。通知：box 心跳超时 → 每次中断发一次 `box_unreachable` webhook，它只唤醒 Grok 的 Routine，**不会唤醒机器**。续跑：只有 box 重新运行后（它自己的定时器或下一次连上它的 watchdog），才从最后一个 checkpoint 继续。ssh 不能唤醒或解冻挂起的主机，nova-relay 的任何部分都做不到；box 睡着时它上面的任务只能等待。 |
+| 派发送达 | 任务提交前先以 `submitting` 登记到批次。提交超时或回复丢失时不猜结果：让执行主机对每个 id 做 fence——已存在就报告真实状态，不存在就写墓碑（之后迟到/重试的提交被拒，永久有效：gc 从不删墓碑，删任务/批次前还会各留一个），只有这种才判 `FAIL submit`。主机连不上时批次保持 WAIT，coordinator 的 tick 继续对账；10 分钟的对账延迟只是调度提示，不是正确性假设。`dispatch --key K` 让重试变安全：同一个键永远对应同一个批次和同样的任务 id，只重新提交还没对账的任务。`dispatch --json` 给出每个任务的送达情况（`unknown`/`delivered`/`not_delivered`/`abandoned`）；退出码 75 = 送达未知，用同一个键重试。不带键时，看到 `submit error:` 不要重新 dispatch。 |
+| 放弃主机 | 只能显式操作：`nova-relay abandon <batch> --host H --yes` 结束该主机在批次里未结束的条目（`abandoned`，批次 FAIL）。它**不声称远端已经停止**（取消会排队，等主机回来才送达），之后该主机的迟到上报只记录、不生效。没有任何自动放弃。 |
+| 进程隔离（可选） | `isolation.mode: "strict"`（默认 `off`）：验收命令和/或 claude 执行者在 bubblewrap 里运行——只有工作区可写、主机 HOME 与 `/tmp` 为私有 tmpfs、独立 pid namespace、验收默认无网络。bwrap 不可用或配置不安全 → 该步骤**不运行**（`blocked`），绝不退回无隔离。与官方订阅登录的张力如实说明：claude 执行者保留网络，`~/.claude` 只读**绑定**（不复制 token），沙箱里的代码仍能读这些凭据文件。nova-guard 仍是启发式检查，不是沙箱。见 docs/security.md |
+| 用量与预算 | `segments`/`minutes` 本地计量；token/费用只记提供方**报告**的数字，没报告就是**未知**（不当作 0），不估价。订阅 CLI 的 token/费用不是账单、不是剩余额度。上限在新分段开始前检查，`segments_per_day` 原子占位；已在运行的分段可能超出分钟/token/费用上限（不是精确的硬性计费上限）。`nova-relay stats [--json]` 显示当天用量、上限、暂停与通知计数（送达数/尝试数，不是模型消耗） |
+| 路由证据 | 每个任务终态时在本机记录类型、执行者、结果、重试、耗时与已报告的费用；`nova-relay recommend` 给出带样本数和保守置信度（样本不足明确标出）的建议，**从不自动改路由** |
+| 备份 / 恢复 | `snapshot`（不含密钥、日志、租约，**不含 git 分支与 worktree**）、`restore --from … --dest <空目录>`（先全部校验：路径穿越、符号链接、哈希、批次↔任务引用；不启动 worker、未完成任务改为 blocked、待发通知扣住不重放）、`migrate --dry-run`（能读/不能读、回滚步骤） |
+| 密钥 | 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600）。`secrets.env` 里的每个变量名、配置声明的密钥变量名（webhook `url_env`/`key_env`、执行者 `key_env`）以及像密钥的名字（`*_KEY`、`*_TOKEN`…），不论叫什么都不传给执行者与验收命令，值在日志/结果里脱敏（pi 显式拿到它自己的 `key_env`）。这是环境变量层面的隔离，不是沙箱：关闭进程隔离时，同一用户下的代码仍能按绝对路径读文件（见 docs/security.md）。 |
+
+> ⚠️ **恢复能力必须在真实环境中验证。** 睡眠、重启、Tailscale 断线下的续跑逻辑有单元/集成测试覆盖，但真实机器上的行为（systemd 定时器、ssh、CLI 版本）只能实测确认。nova-relay **不保证**可用性、不保证零停机，也不能唤醒睡眠中的 box。它的设计目标是：状态在磁盘上、能检测并每次中断通知一次、主机重新运行后（需要它自己的定时器或 watchdog 跑起来）从 checkpoint 续跑、重试与时长都有上限而不是无限循环、每次停止都记录为任务状态而不是悄悄丢掉。这些是经本地测试检查的设计目标，不是保证——磁盘损坏、主机再也回不来、未实测的真实机器行为都不在其内。
 
 ## 快速开始
 
-### 1. 发给 Grok Bot 自助配置（推荐）
-
-只需把本仓库链接发给你的 Grok Bot，让它按 [AGENTS.md](AGENTS.md) 自动化配置：
-
-```text
-请阅读 https://github.com/Chasen-Liao/grokbot-and-pi 的 AGENTS.md，帮我把 GAP 配置好。
+```bash
+git clone <this repo> nova-relay && cd nova-relay
+./install.sh --systemd box     # 在 box 上；VPS 上用 --systemd vps
+$EDITOR ~/.config/nova-relay/config.json   # 参考 docs/config.md
+nova-relay doctor          # 加 --live 做真实登录/key 检查（可选）
 ```
 
-Bot 会依序检查 Node.js（>= 22）、检查或安装 Pi CLI、运行安装脚本、协助配置模型额度与 Webhook 唤醒 Routine、录入技能并完成冒烟测试。
-
-### 2. 手动安装步骤
-
-如果你希望在 Bot 所在机器上自行手动安装：
+Grok 派活（典型一轮）：
 
 ```bash
-# 1. 确保 Node.js >= 22，并全局安装 Pi CLI
-node -v  # 必须 >= 22
-npm i -g @earendil-works/pi-coding-agent
-pi --version
-
-# 2. 克隆本仓库并执行安全安装脚本（默认安装到 ~/tools/pi-call）
-git clone https://github.com/Chasen-Liao/grokbot-and-pi /tmp/grokbot-and-pi
-cd /tmp/grokbot-and-pi
-./install.sh
-
-# 3. 将工具目录加入 PATH（可选，如加入 ~/.bashrc）
-export PATH="$HOME/tools/pi-call:$PATH"
-
-# 4. 验证命令正常可用
-~/tools/pi-call/pi-task --help
+nova-relay brief-template > /tmp/t1.md      # 填写任务书
+nova-relay dispatch --project PD /tmp/t1.md /tmp/t2.md
+# 输出 batch b-2026...，Grok 告诉用户已派发并结束本轮
 ```
 
----
-
-## 日常使用
-
-Grok Bot 通过 `pi-task` 调度与跟踪任务，常用命令如下：
+Grok 被 webhook 唤醒后：
 
 ```bash
-# 1. 后台派发任务（必须带 --owner）
-~/tools/pi-call/pi-task run /workspace/project "重构鉴权中间件并补充单测" \
-  --session auth-refactor \
-  --owner YOUR_AGENT_ID \
-  --notify-prefix GROKBOT \
-  [--model provider/model] [--thinking medium] [--timeout 1800]
-
-# 2. 追加要求或在原会话续跑
-~/tools/pi-call/pi-task reply TASK_ID "把 token 过期的边界条件也覆盖上" --owner YOUR_AGENT_ID
-
-# 3. 查看状态、查看最新日志或取消任务
-~/tools/pi-call/pi-task status TASK_ID
-~/tools/pi-call/pi-task log TASK_ID -n 30
-~/tools/pi-call/pi-task cancel TASK_ID
-
-# 4. 查看未确认任务并在亲身核验后确认
-~/tools/pi-call/pi-task pending --owner YOUR_AGENT_ID
-~/tools/pi-call/pi-task ack TASK_ID --owner YOUR_AGENT_ID
-
-# 5. 处理被 pi-guard 拦截的高危审批（必须由用户决断！）
-~/tools/pi-call/pi-task approve TASK_ID REQ_ID --owner YOUR_AGENT_ID
-~/tools/pi-call/pi-task deny TASK_ID REQ_ID --owner YOUR_AGENT_ID
+nova-relay pending --owner grok-pd          # 一行一个批次：batch b-… PASS 2/2
+nova-relay batch b-…                        # 每个任务的结论与分支
+git -C ~/work/pd diff main...nova/t-…       # 抽查
+nova-relay ack b-… --owner grok-pd
 ```
 
-### 任务书五要素
+## 文档
 
-Grok Bot 派活时编写的任务书应当越精炼越好，包含五个关键要素：
-1. **做什么**：一两句话讲清楚目标与必要背景（Pi 无法看到聊天上下文）；
-2. **产物路径**：修改或生成文件的绝对路径；
-3. **完成标准**：可量化核验的标准（如单测通过、导出对应接口）；
-4. **严格边界**：如「只改 `/workspace/project/src` 目录，严禁删除任何文件，严禁 git push」；
-5. **收尾规则**：「写完产物自查一次即结束，不要反复重试或无限自查」。
+- [docs/setup-box.md](docs/setup-box.md) — box（Grok + Claude Code）安装
+- [docs/setup-vps.md](docs/setup-vps.md) — VPS / mm01（coordinator + codex/pi/deepseek + watchdog）安装
+- [docs/config.md](docs/config.md) — 配置参考
+- [docs/failure-modes.md](docs/failure-modes.md) — 故障模式表：问题 / 检测 / 自动处理 / 何时唤醒 Grok
+- [docs/security.md](docs/security.md) — 守卫、审批、密钥与提示词注入
+- [docs/cli.md](docs/cli.md) — 命令参考
+- [routines/grok-wake.md](routines/grok-wake.md) — Grok webhook 唤醒 Routine 提示词模板
+- [skills/](skills/) — Grok 技能：`nova-relay-dispatch`、`nova-relay-setup`
+- [AGENTS.md](AGENTS.md) — 给 AI Agent 的配置步骤
 
----
+## 开发
 
-## 可靠性与韧性保障
-
-- **宿主机睡眠与重启自动恢复**：
-  Bot 所在电脑空闲时容易休眠，休眠会冻住 Pi。通过在派发轮次中保持阻塞等待（`AwaitShell`），可确保任务连贯执行不被休眠打断。若机器被突发重启打断，`pi-task status` 能自动识别孤儿进程并标记为 `interrupted`。Bot 仅需运行 `pi-task cancel <ID>` 清理旧状态，再用 `pi-task reply <ID> '电脑刚才重启了，请接着做剩下的工作…' --owner <BOT_ID>` 即可在原会话中无缝续跑。
-- **模型链路预检（`pi-preflight`）**：
-  电脑刚从睡眠唤醒时，虚拟网卡与转发链路（如 Tailscale）可能处于假死状态：本地端口看似可连，但 HTTP 请求挂起并在 2 分钟后报 `UND_ERR_SOCKET`。将 `bin/pi-preflight.example` 复制到 `~/tools/pi-call/pi-preflight` 并配好健康探测接口，`pi-task` 会在 `run`、`reply` 与 `approve` 执行前自动执行预检，若链路不通则自动重启网络并等待就绪。Pi 遇到连接报错自动重试时也会并行拉起预检。
-- **空闲超时熔断（`idle-timeout`）**：
-  若 Pi 持续 300 秒（可通过 `--idle-timeout <秒数>` 或环境变量 `PI_TASK_IDLE_TIMEOUT` 配置）未产生任何新的 RPC 事件，`pi-task` 会自动将其判为 `failed`（标记原因 `idle timeout`）并照常发送通知，防止任务因后端死锁无限期挂死。
-- **多模型与额度灵活调度**：
-  支持直接传入 `--model <provider/model>`、读取环境变量 `PI_TASK_MODEL`，或直接采用 Pi 本地配置的原生默认模型。若在 VPS 上自建网关（如 Magpie）将网页配额转为 API，**务必仅监听 Tailscale 内网地址并启用 Token 认证，严禁向公网开放端口**（详见 [docs/quota.md](docs/quota.md)）。
-
----
-
-## 安全防护与权限边界
-
-- **防删库跑路扩展（`pi-guard`）**：
-  内置在 `extensions/pi-guard.ts` 中并默认开启。`pi-guard` 极窄拦截灾难性删除命令（如针对根目录、用户主目录、工作区或通配符的递归删除 `rm -rf /`、`/workspace`、`*`、`~`，以及危险的 `find -delete`、`mkfs`、底层覆写 `dd of=/dev/`）。项目的正常构建清理（如 `rm -rf ./build`、`node_modules`）完全放行。
-- **人机协同审批闭环（`needs_approval`）**：
-  当 Pi 尝试执行被拦截的命令时，命令被暂存并分配唯一请求号（`req`），Webhook 向 Bot 发送 `state: "needs_approval"` 通知。**Bot 必须将命令原样展示给人类用户，严禁擅自审批放行。** 只有当用户明确同意放行后，Bot 才执行 `pi-task approve <ID> <req> --owner <BOT_ID>`。
-- **高危不可逆操作严禁派给 Pi**：
-  文件删除、发送消息/邮件、在线付款、公开发帖、代码库推送（`git push`）等高风险操作**绝对不交给 Pi**。必须在任务完成并由用户确认后，由 Grok Bot 亲自执行。
-- **敏感凭证防泄漏**：
-  通知密钥（`<BOT>_PI_NOTIFY_URL`、`<BOT>_PI_NOTIFY_KEY`）与认证文件（`~/.pi/agent/auth.json`）在启动 Pi 子进程前会被彻底清除，严禁将其打印到聊天框或持久化到任务日志中。
-
----
-
-## 仓库目录结构
-
-```text
-grokbot-and-pi/
-├── AGENTS.md                  # 专供 Grok Bot 阅读的 7 步端到端自配置指南
-├── bin/
-│   ├── pi-task                # 主 CLI 入口（集成预检与环境管理）
-│   ├── pi-task.mjs            # 任务核心生命周期管理器（RPC、事件流、owner 机制、审批）
-│   ├── pi-call.mjs            # 底层单次 RPC 客户端
-│   ├── pi-run                 # 同步单次快捷包装脚本
-│   └── pi-preflight.example   # 模型网络链路预检与自动重连示例脚本
-├── extensions/
-│   └── pi-guard.ts            # 轻量级防删库扩展（基于 tool_call 拦截）
-├── skills/
-│   ├── grokbot-pi-setup/      # 用于初始化环境与连通性验证的 Bot 技能
-│   └── grokbot-pi-dispatch/   # 用于日常任务书撰写、后台派活与验收确认的 Bot 技能
-├── routines/
-│   └── pi-task-notify.md      # Grok Bot 平台的 Webhook Routine 提示词模板
-├── docs/
-│   ├── logo.png               # 项目图标
-│   ├── workflow.jpg           # 流程示意图
-│   ├── quota.md               # 模型额度接入指南（官方 API、中转站、自建 Magpie 网关）
-│   ├── security.md            # pi-guard 防护规则细节与人机审批放行机制说明
-│   ├── setup-guide.md         # 详细部署、内部生命周期与存储结构参考文档
-│   └── pi-task-reference.md   # pi-task 命令行子命令、参数与环境变量完整手册
-├── tests/
-│   └── pi-guard.test.mjs      # pi-guard 拦截与放行逻辑测试集
-├── install.sh                 # 安全的一键安装脚本
-├── UPSTREAM-README.md         # 上游项目原始文档（供追溯参考）
-└── LICENSE                    # MIT 开源许可证
+```bash
+npm test     # node --test，无第三方依赖，Node >= 22
 ```
 
----
+测试会从子进程/测试上下文的环境中剥离 `NOVA_RELAY_HOME`、`NOVA_RELAY_CONFIG`、`NOVA_RELAY_SECRETS`、`NOVA_RELAY_HOST` 等 `NOVA_*` 变量、webhook/密钥类变量和执行者提供商变量（`tests/helpers.mjs` 的 `isolatedEnv`），只设置临时配置所需的值。此前在导出了运维 home 的 shell 里跑 `npm test` 并不安全：CLI 测试会把批次、任务和待发 webhook 写进该 home。现在已修复，但测试仍不是沙箱——请勿在生产主机上用真实密钥跑测试。
 
-## 扩展文档
+测试名带标签：`[simulated]`（伪造的 CLI / fetch 注入故障，`tests/fault-harness.test.mjs` 演练断网、额度墙、登录失效、卡死、通知送达失败）与 `[real-runtime]`（本机真实 bubblewrap，没有时自动跳过并写明原因）。真实 VPS/ssh、Codex 登录、DeepSeek 凭据、非回环 webhook、真实睡眠/重启、生产仓库都**不在**测试范围内，见 docs/failure-modes.md「待完成的外部集成关卡」。`.github/workflows/test.yml` 在 push / PR 上用 Node 22 跑 `npm test`（无密钥、无额外服务）。
 
-- [模型额度配置指南 (docs/quota.md)](docs/quota.md) — 官方 API Key、OpenAI 兼容中转站与自建 Magpie 网关安全配置。
-- [安全防护机制与放行流程 (docs/security.md)](docs/security.md) — `pi-guard` 拦截规则与 `approve`/`deny` 审批流程。
-- [详细部署与生命周期说明 (docs/setup-guide.md)](docs/setup-guide.md) — 任务生命周期、目录存储格式与手动配置向导。
-- [pi-task 命令行完整参考手册 (docs/pi-task-reference.md)](docs/pi-task-reference.md) — 子命令参数、退出码与环境变量完整说明。
-- [例行任务唤醒模板 (routines/pi-task-notify.md)](routines/pi-task-notify.md) — 在 Grok Bot 平台创建 Webhook Routine 的标准提示词。
+代码结构：`lib/executors/*.mjs`（每个执行者一个文件，新增执行者 = 加一个文件 + 注册一行）、`lib/runner.mjs`（分段循环）、`lib/relay.mjs`（批次/worker/续跑/tick/gc）、`lib/acceptance.mjs`、`lib/guard.mjs`、`lib/notify.mjs`（唤醒规则 + 事故合并 + outbox）、`lib/doctor.mjs`、`lib/isolation.mjs`（可选的 bwrap 进程隔离）、`lib/usage.mjs` + `lib/budget.mjs` + `lib/stats.mjs`（用量与预算）、`lib/evidence.mjs`（路由证据与建议）、`lib/backup.mjs`（快照/恢复/迁移计划）。
 
----
+## 许可
 
-## 致谢与开源协议
-
-本项目基于 [robbin/grokbot-local-agent](https://github.com/robbin/grokbot-local-agent) 构建与改进，遵循 [MIT 许可证](LICENSE)。完整上游说明请参阅 [UPSTREAM-README.md](UPSTREAM-README.md)。向原作者 robbin 的卓越设计致敬！
+MIT。保留上游版权声明，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

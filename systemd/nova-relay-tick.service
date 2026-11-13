@@ -1,0 +1,7 @@
+[Unit]
+Description=nova-relay tick (flush outbox, resume stale tasks, heartbeat, gc)
+
+[Service]
+Type=oneshot
+# Secrets are read by nova-relay itself from ~/.config/nova-relay/secrets.env (0600).
+ExecStart=%h/.local/bin/nova-relay tick

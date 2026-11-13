@@ -1,0 +1,12 @@
+[Unit]
+Description=nova-relay tick every 5 minutes (box)
+
+# Persistent=true: a run missed while the box was asleep fires once it is running again — that
+# is when its tasks resume. The timer does not (and cannot) wake the box.
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

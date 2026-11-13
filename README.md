@@ -1,214 +1,111 @@
-<p align="center">
-  <img src="docs/logo.png" alt="GAP logo" width="128">
-</p>
+# nova-relay
 
-<h1 align="center">GAP — Grokbot And Pi</h1>
+**English** | [中文（主文档）](README.zh-CN.md)
 
-English | [简体中文](README.zh-CN.md)
+nova-relay is a small, pluggable **planner → executor relay**:
 
-Let Grok Bot delegate heavy coding, batch file editing, and long document processing to a local **Pi coding agent** ([pi.dev](https://pi.dev)) running as a subagent on the same computer, keeping Grok Bot quota focused on planning and verification.
+- **Planner = Grok Bot** on a Linux "box" that may sleep when idle. Grok only writes a templated **task brief** (goal, files in scope, acceptance command, forbidden actions), dispatches it and **ends its turn**. It is woken once per finished batch, reads a one-line verdict, spot-checks, and `ack`s.
+- **Executors** are adapters chosen by a routing rule (task type → executor) in config:
+  | executor | implementation | runs on | for |
+  |---|---|---|---|
+  | `claude` | official Claude Code CLI `claude -p`, subscription login | **box only** | long tasks, 10–15 min segments resumed with `--resume` |
+  | `codex` | official Codex CLI `codex exec`, ChatGPT subscription | always-on VPS / mm01 | regular code tasks |
+  | `pi` | Pi coding agent (pi.dev) + DeepSeek API key | VPS / mm01 | multi-step code edits |
+  | `deepseek-text` | plain DeepSeek API call | VPS / mm01 | text-only jobs (copy, translation, summaries), no shell |
+- **The acceptance script is the only truth**: tests / typecheck / lint / diffstat, printing one line: `PASS` or `FAIL <where>`. An executor's self-reported success is ignored.
 
----
+No third-party API gateways, no `--bare`, no long blocking waits in the planner's turn.
 
-## Why GAP?
+> Rewritten from GAP / grokbot-and-pi (MIT), itself based on robbin/grokbot-local-agent. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
-- **Save expensive Grok Bot quota**: Cloud bot allowances are costly and best spent on reasoning, task decomposition, and code review. Delegating multi-step execution (reading repositories, editing files, running tests) to Pi consumes your own model accounts (official API keys, custom relays, local Pi defaults, or private gateways).
-- **Keep execution local and fast**: Pi runs on the same cloud Linux machine where the Bot operates, with direct access to local files and bash tools—no cross-network file syncing needed.
-- **Reliable tracking and verification**: Unattended coding agents can freeze on machine sleep, hang on broken connections, or make wild assumptions. GAP provides a persistent task manager (`pi-task`), preflight connection recovery, idle-timeout guards, disaster prevention (`pi-guard`), and human-in-the-loop approvals.
-
----
-
-## Architecture & Closed-Loop Workflow
-
-### At a glance
-
-<p align="center">
-  <img src="docs/workflow.jpg" alt="Bot dispatches, waits, verifies; webhook as fallback" width="420">
-</p>
-
-### Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
-  U(["You"]) -->|chat| B
-  subgraph BOX["Bot computer (shared Linux box)"]
-    B["Grok Bot<br/>plan + verify"]
-    T["pi-task<br/>task runner"]
-    PF["pi-preflight<br/>model-path check"]
-    G["pi-guard<br/>blocks rm -rf / etc."]
-    P["Pi coding agent<br/>does the work"]
-    D[("~/.pi/tasks/ID<br/>state, events, result.md")]
-    B -->|"1. run --owner"| T
-    T -->|check first| PF
-    T -->|RPC session| P
-    P -.->|every tool call| G
-    T -->|persist| D
-    B -->|"2. wait in-turn"| T
-    D -->|"3. pending, verify, ack"| B
+  subgraph BOX["box (may sleep)"]
+    G["Grok Bot<br/>brief → dispatch → end turn"]
+    NB["nova-relay (box)<br/>task store ~/.nova-relay"]
+    C["claude -p<br/>segments + --resume"]
+    T1["tick timer<br/>heartbeat / resume / gc"]
+    G -->|dispatch| NB
+    NB -->|worktree nova/&lt;id&gt;| C
+    T1 --> NB
   end
-  P -->|API calls| M["Model<br/>API key / relay / gateway"]
-  T -.->|"done or needs_approval<br/>(fallback only)"| W["Webhook routine"]
-  W -.->|wake| B
-  G -.->|blocked command| U
+  subgraph VPS["VPS / mm01 (always on)"]
+    NV["nova-relay (coordinator)<br/>batch view + outbox"]
+    X["codex exec"]
+    P["pi + DeepSeek"]
+    D["DeepSeek API (text)"]
+    W["watchdog timer (5 min)"]
+    NV --> X & P & D
+    W --> NV
+  end
+  NB <-->|"ssh over Tailscale<br/>(rpc: submit / report / heartbeat / resume-all)"| NV
+  W -.->|"ssh resume-all (only if the box is up)<br/>else: record + heartbeat notification"| NB
+  NV -->|"webhook (HTTPS / Tailscale only)<br/>{source,batch,id,state,exit_code}"| R["Grok Routine<br/>(webhook wake)"]
+  R --> G
 ```
 
-GAP operates as a closed 4-step loop:
+## Key properties
 
-1. **Dispatch (`pi-task run`)**: Grok Bot drafts a concise, self-contained task specification and launches it in the background using `pi-task run <dir> '<prompt>' --session <name> --owner <BOT_ID> --notify-prefix <BOT>`.
-2. **Wait in-turn (Avoid sleep freeze)**: The Bot **does not exit the current turn**. Because cloud agent host machines often sleep or restart when idle (which freezes or kills background worker processes), the Bot holds an extended blocking wait (`AwaitShell`, up to ~13 minutes) until Pi finishes. Waiting in-turn consumes virtually zero Bot model quota while keeping the machine awake.
-3. **Webhook as fallback**: If the conversation turn does end prematurely, `pi-task` sends a lightweight HTTP POST notification (`{source, id, owner, state, exit_code}`) to the Bot's webhook routine upon completion or when an approval is required (`needs_approval`).
-4. **Inspect, report, and Ack**: The Bot inspects `~/.pi/tasks/<ID>/result.md`, verifies git diffs, file artifacts, and test outputs first-hand, reports the findings to the user, and acknowledges the task with `pi-task ack <ID> --owner <BOT_ID>`.
+- **Disk is the source of truth**: `~/.nova-relay/tasks/<id>/` holds `brief.md`, `state.json` (atomic writes, rebuilt from `journal.jsonl` if corrupt), `events.jsonl`, `progress.md`, `result.md`. State files are schema-versioned with migrations.
+- **Batch wakes only**: the webhook fires when the whole batch is terminal, when a task's segment fails more than 3 times, or when a task needs approval/auth/is blocked. Payload is exactly `{source,batch,id,state,exit_code}`; the dedup key travels in `Idempotency-Key`. Delivery goes through a durable outbox with backoff, oldest first; redirects are not followed (a 3xx stays queued), so a wake cannot be silently delivered elsewhere. **Incidents coalesce**: several tasks of a batch blocked by the same executor-wide cause, or escalated by the same network incident, wake the planner once (the first wake goes out immediately); host-unreachable wakes have a cooldown (`notify_cooldown_minutes`, default 60) so a flapping link does not wake it repeatedly.
+- **Segments**: wall-clock cap + idle timeout per segment; after each segment nova-relay commits a checkpoint on the task branch and stores the executor's PROGRESS summary; the next segment receives a progress summary, not the full history.
+- **Local retry**: acceptance FAIL is fed back to the executor up to `max_local_retries` times before escalating.
+- **Isolation**: one git worktree + branch `nova/<id>` per task, no concurrent tasks with overlapping file scopes in a project, separate repo/worktrees/env/webhook/owner per project (e.g. PD vs NM); cross-project paths are refused.
+- **Guard** (`nova-guard`, formerly pi-guard): destructive deletes, any `git push`, remote/config changes, publishing, outbound network/messages, host config, credential reads, writes outside the worktree → blocked into the approval flow. Commands are split (`bash -lc`, `$(…)`, pipes), wrappers are parsed (`env -i`, `nice -n`, `timeout`, `xargs`, `sudo`, `eval`), directory changes are followed (`cd`, `git -C/--git-dir/--work-tree`, `make -C`, `npm --prefix`, `env -C`, `tar -C`; unresolvable targets are denied), write targets outside the worktree are denied (redirections, cp/mv/tee/rm/sed -i, symlinks resolved), code-injecting env assignments (`PATH` with executor-writable dirs, `LD_*`, `NODE_OPTIONS`, `GIT_*`) are blocked, and scripts the executor could have written (shell, npm scripts, Makefiles, heuristic scan of python/node/…) are inspected before they run. Claude uses a PreToolUse hook (verified live on Claude Code 2.1.308; a run where tools were used but the hook never fired is blocked, because `claude -p` silently ignores invalid `--settings`), Pi an extension (must report that it loaded; pi runs with `--no-extensions --no-approve --no-mcp`, so no other extension can rewrite a call after the guard approved it, and unknown tools are blocked). Codex has no pre-hook: its `workspace-write` sandbox (run with `--ignore-user-config --ignore-rules`, no `--trust`), plus an after-the-fact audit of every command, file change and MCP call in its `--json` event stream (hits become `audit` approvals; a run with no parseable events is blocked), plus acceptance-time checks.
+- **Independent acceptance for every executor**: the executor's self-report is ignored. Leftover background jobs are killed, the segment is checkpointed, and the brief's commands + project checks run in a fresh, hook-less, detached checkout of the task branch commit in a standalone temporary clone (planted ignored/untracked files don't exist there; git commands run by setup or tests — e.g. husky's `git config core.hooksPath` — cannot touch the shared repo), with an allowlisted env, an empty HOME, a private TMPDIR, a PATH without relative or repo/worktree entries, and `bash --noprofile --norc`. Commands run asynchronously, so the worker keeps renewing its lease during a long `npm ci` + test run, and a cancel kills them. Tampering is fatal and never retried: shared `.git/config`/`hooks`/`info` changed, HEAD moved off `nova/<id>` or history rewritten, tests deleted/skipped/removed, test harness or `package.json` scripts or a script the acceptance command calls changed (unless the brief says `allow_harness_changes: true`), symlinks escaping the worktree or replacing test files, the shared `.git` or the task branch changed while the commands ran. A failing `acceptance_setup` (registry/network down) is `FAIL setup:…` and escalated, not handed back to the executor. Forbidden paths, scope, empty diff and command failures are retried locally with the error.
+- **Model ids are explicit**: `pi` and `deepseek-text` have no default model; the config must name one (the example ships a placeholder that fails `config-check`). `doctor --live` requires the id to appear verbatim in DeepSeek's `GET /models`; a provider "model does not exist" error blocks the task. No other id is ever substituted.
+- **Quota**: a paused executor's queued tasks are rerouted at dispatch; running tasks optionally reroute at the next segment boundary (`routing.reroute_paused`: same host in place, or across hosts with a git bundle of the task branch). Off by default.
+- **Concurrency**: cross-process locks around every state/batch/budget update. Locks and leases record the holder's process *instance* (pid, start time, boot id) and are only taken over when that instance is provably gone (pid gone or reused, zombie, earlier boot). A same-host holder that is alive is never displaced because its lock or lease is old — not even when it is SIGSTOPped or suspended: waiters time out instead (fail closed; there is no flock in Node, so a stopped holder blocks that file until it resumes or dies). Steals go through a per-instance steal token plus a re-read, so a racer with a stale view cannot move a live holder's lock aside. One worker per host; journal with sequence numbers replayed after a crash. A "frozen" worker is only killed after 3×TTL of *observed* non-renewal (so a box waking from sleep is not mistaken for a hung worker), and its task is only re-queued once the worker and the orphaned executor process group are confirmed dead; if that cannot be confirmed the task stays `running` for a human (availability traded for never having two writers).
+- **Dispatch delivery is confirmed, not guessed**: tasks are registered as `submitting` before they are sent. If a submit times out or its reply is lost, the host is asked to *fence* each id: an existing task reports its real state, an absent one is tombstoned (a late or retried submit is refused, forever — gc never removes tombstones and leaves one for every task and batch it deletes) and only then counts as `FAIL submit`. While the host is unreachable the batch stays WAIT and the coordinator's tick keeps reconciling; the 10-minute reconcile delay is a scheduling hint, not a correctness assumption. `dispatch --key K` makes retries safe: the same key always maps to the same batch and task ids, and only unreconciled tasks are resubmitted. `dispatch --json` reports each task's delivery (`unknown` / `delivered` / `not_delivered` / `abandoned`); exit 75 means "delivery unknown, retry with the same key". Without a key, don't re-dispatch after a `submit error:`.
+- **Giving up on a host is explicit**: `nova-relay abandon <batch> --host H --yes` ends that host's unresolved entries in the batch (`abandoned`, batch FAIL). It never claims remote work stopped — a cancel is queued for when the host returns — and late reports from that host are recorded but ignored. Nothing abandons automatically.
+- **Recovery = detection + notification + resume once the host runs again**: TTL leases; a stale lease is stolen under a lock with a re-check (two watchdogs can't double-resume). *Detection*: the VPS watchdog tries `ssh box … resume-all` every 5 minutes and records when the box became unreachable; the box's own timer finds dead/frozen workers. *Notification*: a missed box heartbeat sends one `box_unreachable` webhook per outage — that wakes the Grok routine, **not the machine**. *Resume*: only after the box is running again (its own timer or the next watchdog that reaches it), from the last checkpoint. ssh cannot wake or unfreeze a suspended host, and nothing in nova-relay does; tasks on a sleeping box wait.
+- **Optional process isolation** (`isolation.mode: "strict"`, default `off`): acceptance commands and/or the claude executor run inside bubblewrap — workspace-only writes, private tmpfs over the host home and `/tmp`, own pid namespace, no network for acceptance by default. If bwrap is unavailable or a bind is unsafe, that step does **not** run (task `blocked`); there is no unsandboxed fallback. The tension with official subscription auth is stated plainly: the claude executor keeps network access and gets `~/.claude` as a read-only **bind** (no token copy), so code in the sandbox can still read those credential files. nova-guard remains a heuristic check, not a sandbox. See docs/security.md.
+- **Usage and budgets**: segments/minutes are measured locally; tokens/cost are only what the provider *reported* — missing numbers are **unknown**, never 0, and nothing is priced. Subscription CLI token/cost figures are not a bill and not remaining quota. Caps are checked before a new segment starts (`segments_per_day` reserves its slot atomically); a segment already running can overshoot minutes/tokens/cost caps — not an exact hard billing cap. `nova-relay stats [--json]` shows today's usage, caps, pauses and notification counts (deliveries vs attempts — not model consumption).
+- **Routing evidence**: each terminal task records type, executor, outcome, retries, elapsed time and measured cost locally; `nova-relay recommend` gives advice with sample sizes and a conservative confidence label ("insufficient data" below 5 samples). It **never changes routing**.
+- **Backup / restore**: `snapshot` (no secrets, logs or leases; **no git branches or worktrees**), `restore --from … --dest <empty dir>` (everything verified first — traversal, symlinks, hashes, batch↔task integrity; no worker started, unfinished tasks blocked, pending notifications held, not replayed), `migrate --dry-run` (what this version can/cannot read, rollback plan).
+- **Secrets** only from env vars or `~/.config/nova-relay/secrets.env` (must be 0600). Every name in `secrets.env`, every env name the config declares as a secret (webhook `url_env`/`key_env`, executor `key_env`) and secret-looking names (`*_KEY`, `*_TOKEN`, …) are withheld from executor and acceptance processes whatever they are called, and their values are redacted from logs/results (pi receives its own `key_env` explicitly). This is env hygiene, not a sandbox: with process isolation off, code running as the same user can still read files by absolute path (see docs/security.md).
 
-> **Disk is the single source of truth**: All status records, event streams, and results are persisted under `~/.pi/tasks/<ID>/`. Webhooks are strictly a wake-up mechanism. If a notification packet drops, the Bot recovers all unreported outcomes simply by checking `pi-task pending --owner <BOT_ID>`.
+> ⚠️ **Recovery must be verified in a real test.** Sleep/reboot/Tailscale-loss handling is covered by unit and integration tests, but real machines (systemd timers, ssh, CLI versions) must be tested in place. nova-relay does **not** guarantee uptime or zero downtime and cannot wake a sleeping box. What it is designed to provide: state on disk, detection and one notification per outage, resume from the last checkpoint once the host runs again (its own timer or the watchdog has to run), bounded retries/limits instead of infinite loops, and every stop recorded as a task state rather than silently dropped. These are design goals checked by local tests, not guarantees against disk loss, a host that never comes back, or untested real-machine behaviour.
 
----
-
-## Quick Start
-
-### 1. Automated Setup with Grok Bot (Recommended)
-
-Simply send this repository link to your Grok Bot and ask it to configure itself following [AGENTS.md](AGENTS.md):
-
-```text
-Please read AGENTS.md at https://github.com/Chasen-Liao/grokbot-and-pi and set up GAP for me.
-```
-
-The Bot will verify Node.js (>= 22), check or install Pi CLI, run the installer, help configure your model source and Webhook routine, register skills, and run a smoke test.
-
-### 2. Manual Installation
-
-If you prefer to install manually on the Bot host:
+## Quick start
 
 ```bash
-# 1. Ensure Node.js >= 22 and install Pi CLI globally
-node -v  # must be >= 22
-npm i -g @earendil-works/pi-coding-agent
-pi --version
-
-# 2. Clone this repository and run the safe installer (installs to ~/tools/pi-call)
-git clone https://github.com/Chasen-Liao/grokbot-and-pi /tmp/grokbot-and-pi
-cd /tmp/grokbot-and-pi
-./install.sh
-
-# 3. Add tools to PATH (optional, e.g. in ~/.bashrc)
-export PATH="$HOME/tools/pi-call:$PATH"
-
-# 4. Verify minimal command execution
-~/tools/pi-call/pi-task --help
+./install.sh --systemd box        # on the box; on the VPS: --systemd vps
+$EDITOR ~/.config/nova-relay/config.json   # docs/config.md
+nova-relay doctor              # add --live for real login/key checks (opt-in)
+nova-relay brief-template > /tmp/t1.md
+nova-relay dispatch --project PD /tmp/t1.md
+# … webhook wake …
+nova-relay pending --owner grok-pd
+nova-relay ack <batch> --owner grok-pd
 ```
 
----
+## Docs (Chinese)
 
-## Daily Use
+[setup-box](docs/setup-box.md) · [setup-vps](docs/setup-vps.md) · [config](docs/config.md) · [failure-modes](docs/failure-modes.md) · [security](docs/security.md) · [cli](docs/cli.md) · [Grok routine prompt](routines/grok-wake.md) · [skills](skills/) · [AGENTS.md](AGENTS.md)
 
-Grok Bot uses `pi-task` to manage delegated tasks. Key commands:
+## Development
 
 ```bash
-# 1. Dispatch a background task (always include --owner)
-~/tools/pi-call/pi-task run /workspace/project "Refactor auth middleware and add tests" \
-  --session auth-refactor \
-  --owner YOUR_AGENT_ID \
-  --notify-prefix GROKBOT \
-  [--model provider/model] [--thinking medium] [--timeout 1800]
-
-# 2. Follow up or resume in the same session
-~/tools/pi-call/pi-task reply TASK_ID "Also cover the token expiration edge case" --owner YOUR_AGENT_ID
-
-# 3. Check status, view recent logs, or cancel
-~/tools/pi-call/pi-task status TASK_ID
-~/tools/pi-call/pi-task log TASK_ID -n 30
-~/tools/pi-call/pi-task cancel TASK_ID
-
-# 4. Find pending tasks and acknowledge after first-hand verification
-~/tools/pi-call/pi-task pending --owner YOUR_AGENT_ID
-~/tools/pi-call/pi-task ack TASK_ID --owner YOUR_AGENT_ID
-
-# 5. Handle approval requests intercepted by pi-guard (User decision only!)
-~/tools/pi-call/pi-task approve TASK_ID REQ_ID --owner YOUR_AGENT_ID
-~/tools/pi-call/pi-task deny TASK_ID REQ_ID --owner YOUR_AGENT_ID
+npm test   # node --test, zero dependencies, Node >= 22
 ```
 
-### Writing a Good Task Specification
+The suite strips `NOVA_RELAY_HOME`, `NOVA_RELAY_CONFIG`, `NOVA_RELAY_SECRETS`, `NOVA_RELAY_HOST` and other
+`NOVA_*` vars, webhook/secret-looking vars and executor provider vars from the env it gives spawned
+CLIs and test contexts (`isolatedEnv` in `tests/helpers.mjs`), then sets only its temp values. Before
+this, running `npm test` in a shell with an operator home exported was unsafe: CLI tests wrote
+batches, tasks and pending webhooks into that home. The tests are still not a sandbox; do not run them
+on a production host with live keys loaded.
 
-Grok Bot task specifications should be concise and strictly bounded:
-1. **Goal**: What to do in 1-2 sentences with necessary context (Pi cannot see chat history).
-2. **Artifact Path**: Absolute destination path for modified or created files.
-3. **Definition of Done**: Clear, checkable acceptance criteria (e.g. tests pass, exports added).
-4. **Strict Boundary**: E.g. *"Only edit files in `/workspace/project/src`. Do NOT delete any files. Do NOT git push."*
-5. **Self-check**: *"Perform one self-check after implementation and stop; do not repeat checks endlessly."*
+Test names are labelled `[simulated]` (faults injected by the fake CLI / fake fetch; `tests/fault-harness.test.mjs`
+exercises lost network, quota wall, auth failure, a hung executor and notification delivery failure) or
+`[real-runtime]` (the host's real bubblewrap; skipped with the probe's reason where unavailable). Real VPS/ssh,
+Codex login, DeepSeek credentials, off-loopback webhooks, real sleep/reboot and production repos are *not*
+covered — see "pending external integration gates" in docs/failure-modes.md. `.github/workflows/test.yml`
+runs `npm test` on Node 22 for pushes and pull requests (no secrets, no services).
 
----
+## License
 
-## Reliability & Resilience
-
-- **Host Sleep & Restart Recovery**:
-  Cloud Bot hosts sleep when idle, freezing Pi. By waiting in-turn using blocking `AwaitShell`, tasks complete without host sleep interruptions. If a host reboot interrupts an active job, `pi-task status` detects the orphaned PID and marks it `interrupted`. The Bot simply clears old state with `pi-task cancel <ID>` and resumes work seamlessly using `pi-task reply <ID> 'The machine rebooted; please resume where you left off...' --owner <BOT_ID>`.
-- **Preflight Model Path Health Check (`pi-preflight`)**:
-  When waking up from sleep, network connections (such as Tailscale tunnels) often accept TCP connections but hang on HTTP requests until failing with `UND_ERR_SOCKET`. Copy `bin/pi-preflight.example` to `~/tools/pi-call/pi-preflight` and adjust your health probe: `pi-task` automatically runs preflight before `run`, `reply`, and `approve`, restarting network tunnels if unhealthy. When Pi auto-retries a connection error, `pi-task` reruns preflight in parallel.
-- **Idle Timeout Protection**:
-  If Pi stops emitting RPC events for 300 seconds (configurable via `--idle-timeout <seconds>` or `PI_TASK_IDLE_TIMEOUT`), `pi-task` terminates the task with state `failed` (reason `idle timeout`) and sends a notification, preventing infinite hangs on dead model sockets.
-- **Flexible Model Quotas**:
-  Pi works with any model provider. Pass `--model <provider/model>`, configure `PI_TASK_MODEL`, or let Pi use its native default model and quota. If self-hosting a translation gateway such as Magpie on a VPS, **bind exclusively to Tailscale private IP addresses with authentication enabled—never expose ports to the public internet** (see [docs/quota.md](docs/quota.md)).
-
----
-
-## Safety & Boundaries
-
-- **Disaster Prevention Extension (`pi-guard`)**:
-  Installed by default in `extensions/pi-guard.ts`. `pi-guard` narrowly intercepts catastrophic operations, including recursive deletes on system roots, user homes, or wildcards (`rm -rf /`, `/workspace`, `*`, `~`), `find -delete` on root/home, `mkfs`, and `dd of=/dev/`. Safe project builds (`rm -rf ./build`, `node_modules`) pass freely.
-- **Human-in-the-Loop Approval Workflow**:
-  When a dangerous command is intercepted, `pi-guard` logs it to `approvals.jsonl` with a unique request ID (`req`) and notifies the Bot with `state: "needs_approval"`. **The Bot must present the command to the user and is strictly forbidden from approving on its own.** Only after the human user explicitly agrees does the Bot run `pi-task approve <ID> <req> --owner <BOT_ID>`.
-- **Restricted Operations Never Delegated to Pi**:
-  Deleting important files, sending emails or external messages, online payments, public social posts, and `git push` **must never be handed to Pi**. Grok Bot handles these sensitive actions directly after separate user confirmation.
-- **Secret Hygiene**:
-  Notification credentials (`<BOT>_PI_NOTIFY_URL`, `<BOT>_PI_NOTIFY_KEY`) and authentication stores (`~/.pi/agent/auth.json`) are stripped from child processes and must never be printed to chat or recorded in task logs.
-
----
-
-## Repository Layout
-
-```text
-grokbot-and-pi/
-├── AGENTS.md                  # 7-step guide for Grok Bot automated self-configuration
-├── bin/
-│   ├── pi-task                # Main CLI wrapper with preflight support
-│   ├── pi-task.mjs            # Task lifecycle runner (RPC, events, owner, approvals)
-│   ├── pi-call.mjs            # Low-level one-shot RPC client
-│   ├── pi-run                 # Synchronous quick-run wrapper
-│   └── pi-preflight.example   # Example network/gateway health probe & reconnect script
-├── extensions/
-│   └── pi-guard.ts            # Lightweight disaster prevention extension (tool_call guard)
-├── skills/
-│   ├── grokbot-pi-setup/      # Skill for initial environment and connectivity setup
-│   └── grokbot-pi-dispatch/   # Skill for task writing, dispatch, monitoring, and ack
-├── routines/
-│   └── pi-task-notify.md      # Webhook Routine prompt template for Grok Bot
-├── docs/
-│   ├── logo.png               # Project icon
-│   ├── workflow.jpg           # Illustrated workflow
-│   ├── quota.md               # Model quota setup (official API, relays, Magpie gateway)
-│   ├── security.md            # pi-guard specifications and human approval workflow
-│   ├── setup-guide.md         # Detailed lifecycle, storage, and manual setup guide
-│   └── pi-task-reference.md   # Complete pi-task CLI and environment reference
-├── tests/
-│   └── pi-guard.test.mjs      # Test suite for pi-guard interception rules
-├── install.sh                 # Safe non-destructive installer
-├── UPSTREAM-README.md         # Upstream project documentation (reference)
-└── LICENSE                    # MIT License
-```
-
----
-
-## Documentation
-
-- [Model Quota Setup Guide](docs/quota.md) — Official API keys, OpenAI relays, and private Magpie setups.
-- [Security & Guard Workflow](docs/security.md) — `pi-guard` rule definitions and human-in-the-loop approvals.
-- [Setup & Lifecycle Guide](docs/setup-guide.md) — Comprehensive environment configuration and task store internals.
-- [pi-task CLI Reference](docs/pi-task-reference.md) — CLI flags, subcommands, exit codes, and environment variables.
-- [Webhook Routine Template](routines/pi-task-notify.md) — Copy-paste prompt for configuring the Bot's Webhook Routine.
-
----
-
-## Credits & License
-
-This project is built upon and evolved from [robbin/grokbot-local-agent](https://github.com/robbin/grokbot-local-agent) under the [MIT License](LICENSE). See [UPSTREAM-README.md](UPSTREAM-README.md) for original background. Special thanks to robbin for the foundational architecture!
+MIT, upstream copyright lines retained — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

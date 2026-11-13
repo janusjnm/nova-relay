@@ -1,0 +1,7 @@
+[Unit]
+Description=nova-relay watchdog (VPS: tick + ask a running box to resume over Tailscale ssh; detects and records an unreachable box, cannot wake it)
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/nova-relay watchdog
