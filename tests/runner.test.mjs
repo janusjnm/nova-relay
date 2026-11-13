@@ -209,7 +209,7 @@ test("secrets in executor output are redacted in progress and logs; child env ha
   assert.equal(env.ANTHROPIC_BASE_URL, undefined);
 });
 
-test("adapter contracts: required flags present in built commands; cliContract detects old versions", () => {
+test("adapter contracts: required flags present in built commands; cliContract detects old versions", async () => {
   for (const [name, a] of Object.entries(ADAPTERS)) {
     if (a.kind !== "agent") continue;
     const built = a.buildCommand({ ex: { model: "m-1" }, prompt: "P", workdir: "/w", taskDir: "/t", segment: 1, session: "s", resume: false, hookCmd: "h" });
@@ -223,11 +223,11 @@ test("adapter contracts: required flags present in built commands; cliContract d
   const home = testConfig(tempRepo().root, "/tmp").home;
   process.env.FAKE_MODE = "oldversion";
   try {
-    const c = cliContract(home, "claude", { bin: FAKE, min_version: "1.0.0" }, ADAPTERS.claude, { force: true });
+    const c = await cliContract(home, "claude", { bin: FAKE, min_version: "1.0.0" }, ADAPTERS.claude, { force: true });
     assert.equal(c.ok, false);
     assert.match(c.why, /< min_version/);
   } finally { delete process.env.FAKE_MODE; }
-  assert.equal(cliContract(home, "claude", { bin: "/nonexistent/claude" }, ADAPTERS.claude, { force: true }).kind, "cli");
+  assert.equal((await cliContract(home, "claude", { bin: "/nonexistent/claude" }, ADAPTERS.claude, { force: true })).kind, "cli");
 });
 
 test("disk preflight blocks before running", async () => {
