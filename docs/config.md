@@ -48,8 +48,15 @@
 |---|---|---|
 | `claude` | `permission_mode`（默认 `acceptEdits`，禁止 `bypassPermissions`）、`setting_sources`（默认 `user`）、`allowed_tools`、`disallowed_tools`（默认禁 WebFetch/WebSearch）、`allow_web`、`fresh_session_every`（默认 4）、`min_version`（默认 `2.0.0`） | `claude --print <prompt> --output-format stream-json --verbose --permission-mode … --settings <PreToolUse hook> --setting-sources user --strict-mcp-config --allowedTools … --disallowedTools … --session-id <uuid>`（续段用 `--resume <uuid>`）；剔除 `ANTHROPIC_*`/`CLAUDE_CODE_USE_*`/`CLAUDE_CODE_OAUTH_TOKEN`；禁止 `--bare`、`--dangerously-skip-permissions` |
 | `codex` | `sandbox`（`workspace-write` 默认或 `read-only`；其他值被拒绝） | `codex exec --json --sandbox … --cd <worktree> --skip-git-repo-check --ignore-user-config --ignore-rules --output-last-message <file> [--model …] <prompt>`：不读 `~/.codex/config.toml`（其中的 MCP 服务器可能发消息、配置可能放宽沙箱；登录仍用 `CODEX_HOME` 里的凭据，所以 `model` 等请写在本配置里）、不读 execpolicy `.rules`、不加 `--trust`（仓库里的 `.codex/` 配置不生效）；剔除 `OPENAI_API_KEY/BASE_URL`、`CODEX_API_KEY`；禁止 `--dangerously-*`/`--yolo`/`--trust`/`--add-dir`/开启网络的覆盖；每段新会话 + 进度摘要；`--json` 事件用于事后审计 |
-| `pi` | `provider`（默认 `deepseek`）、`model`（默认 `deepseek-flash`，pi 1.5.2 内置目录里 deepseek 的模型是 `deepseek-flash` 与 `deepseek-v4-pro`；用 `DEEPSEEK_API_KEY=… pi --list-models deepseek` 查看你的版本）、`key_env`（`DEEPSEEK_API_KEY`；若改名，会以 `DEEPSEEK_API_KEY` 的名字传给 pi）、`tools`、`thinking` | `pi --print <prompt> --provider … --model … --tools … --no-session --no-extensions --no-approve --no-mcp --extension extensions/nova-guard.ts`：只加载 nova-guard（全局/自动发现的扩展可能在守卫放行后改写工具参数）、不加载仓库 `.pi/` 下需信任的资源、无 MCP 工具；`args` 里出现 `-e/--extension`、`-a/--approve` 会校验失败 |
-| `deepseek-text` | `endpoint`（必须 https）、`model`（默认 `deepseek-flash`）、`key_env`、`max_tokens`、`timeout_sec` | 单次 chat-completions 调用，无 shell、无文件访问 |
+| `pi` | `provider`（默认 `deepseek`）、**`model`（必填，无默认值）**、`key_env`（`DEEPSEEK_API_KEY`；若改名，会以 `DEEPSEEK_API_KEY` 的名字传给 pi）、`tools`、`thinking` | `pi --print <prompt> --provider … --model <model> --tools … --no-session --no-extensions --no-approve --no-mcp --extension extensions/nova-guard.ts`：只加载 nova-guard（全局/自动发现的扩展可能在守卫放行后改写工具参数）、不加载仓库 `.pi/` 下需信任的资源、无 MCP 工具；`args` 里出现 `-e/--extension`、`-a/--approve`、`--model/--models/--provider` 会校验失败 |
+| `deepseek-text` | `endpoint`（必须 https）、**`model`（必填，无默认值）**、`key_env`、`max_tokens`、`timeout_sec` | 单次 chat-completions 调用，无 shell、无文件访问 |
+
+### 模型名（pi / deepseek-text）
+
+- `model` **必须显式填写**，nova-relay 不内置、不猜测、也不从 pi 的内置模型目录里取默认值（pi 的目录不代表 DeepSeek 实际提供哪些模型）。示例配置里是占位符 `<DEEPSEEK_MODEL_ID>`，不改就无法通过 `config-check`。
+- 配置校验：缺失、占位符（`<…>`）、含空格/通配符等非法字符 → 报错并拒绝运行。pi 的 `--model` 接受"模式"并把 `id:<级别>` 解释为思考级别，所以 pi 的 `model` 里不允许 `:`（思考级别请用 `thinking` 字段）。
+- `nova-relay doctor --live` 会调用 DeepSeek `GET /models`，配置的 id **必须原样出现在列表里**；列表读不到也算 FAIL（"未核验"），不会当作通过。
+- 运行中供应商返回"模型不存在"（如 `Model Not Exist`、`invalid model`）→ 任务 `blocked` 并唤醒，不重试、**不换用其他模型 id**。请从 `GET /models` 的结果中选一个 id 写进配置。
 
 ### 参数核验情况
 
@@ -58,7 +65,7 @@
 | claude | 本机 Claude Code 2.1.308 的 `claude --help`，并实跑一次：构造出的完整参数被接受、PreToolUse hook 经 `--settings` 生效并拦下 `git push origin main`、`--session-id` 后 `--resume` 同一会话成功、`claude auth status --json` 返回 `authMethod: "claude.ai"` | ✅ 已验证 |
 | codex | 在临时目录安装 codex-cli 0.169.0（未登录、无 key）：用到的每个参数都在真实的 `codex exec --help` 里（快照见 `tests/fixtures/cli/`，契约测试对照它）；未登录时实跑一次，`--json` 输出 `thread.started`/`turn.started`/`error`/`item.completed`/`turn.failed`，与 `@openai/codex-sdk` 的 `ThreadEvent` 类型一致（`item.*` 的 `command_execution.command` 为字符串、`file_change.changes[].path`、`mcp_tool_call`）；同一 item 会先后出现在 `item.started` 与 `item.completed`，审计按 id 去重；`Reconnecting… n/5` 的 `error` 事件是重试中的临时错误，不参与失败分类；`codex login status` 未登录时输出 `Not logged in`、退出码 1 | ✅ 参数与事件信封已实机核验；登录后真实执行命令的事件 🟡 |
 | pi | 在临时目录安装 pi 1.5.2（`@earendil-works/pi-coding-agent`），用本地模拟的 DeepSeek 接口（`~/.pi/agent/models.json` 覆盖 `baseUrl`）端到端实跑适配器构造的完整命令：扩展被加载并写出 `guard-loaded`，模型发起的 `git push origin main` 被拦下并生成审批，普通命令照常执行；去掉 `--no-extensions --no-approve` 时，全局与仓库 `.pi/extensions` 下的扩展都会被加载（能改写已放行的命令），加上后都不加载；无效 key 时输出 `401: {…authentication_error…}`（归类为 auth） | ✅ 已实机验证（用真实 DeepSeek key 的实跑 🟡） |
-| deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验（模型名以 `doctor --live` 为准） |
+| deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验；本仓库**没有**用真实 key 核实过任何模型 id，模型名只以你自己的 `doctor --live`（`GET /models`）为准 |
 
 无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查（按版本缓存 1 小时），不满足则任务 `blocked` 并唤醒。
 
@@ -91,6 +98,9 @@
 | `env_file` | 项目私有 env，**必须 0600**（否则任务 `blocked`），只注入本项目任务与验收命令，值也会被脱敏 |
 | `webhook` | `{ "url_env": "...", "key_env": "..." }` —— 只写**变量名** |
 | `checks` | 每个任务都要跑的验收命令（追加在任务书验收命令之后） |
+| `acceptance_setup` | 可选：验收前在**干净检出**里先跑的命令（如 `npm ci`、`pip install -e .`）。验收不在执行者的 worktree 里跑，被 gitignore 的依赖目录不存在，需要在这里装 |
+| `acceptance_env_pass` | 可选：额外传给验收命令的主机环境变量名（如 `GOCACHE`、`npm_config_cache`）。看起来像密钥的名字（`*_KEY`、`*_TOKEN`、`SECRET`…）会被配置校验拒绝；项目密钥请放 `env_file` |
+| `harness_paths` | 可选：额外的"验收/测试框架"文件 glob；改动它们 = 篡改（见 security.md） |
 | `forbidden_paths` | 任何任务都不能改的 glob（默认 `.git/**`、`.github/workflows/**`、`**/.env`、`**/.env.*`） |
 | `executors` | 可选，执行者白名单 |
 
@@ -98,7 +108,7 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `protected_branches` | `["main","master","release/*"]` | 推送目标属于这些分支时额外标注（任何 push 都会被拦截） |
+| `protected_branches` | `["main","master","release/*"]` | 推送目标属于这些分支时额外标注（任何 push 都会被拦截）；本地移动这些分支（`update-ref`、`branch -f/-D`、`fetch . x:main`、`checkout -B main`）也会被拦截 |
 | `allow_hosts` | `[]` | `curl/wget` 只读 GET 允许访问的主机（如包仓库） |
 
 ## 任务书（brief）
@@ -109,6 +119,7 @@ type: code          # 路由键
 project: PD         # 可选；与 dispatch --project 不一致则拒绝
 executor: claude    # 可选；显式指定
 allow_empty_diff: false
+allow_harness_changes: false   # true = 本任务本来就要改测试框架/验收脚本/package.json scripts
 ---
 # Goal         一段话，可观测的"完成"标准
 # Scope        - 仓库相对 glob（不允许绝对路径、..、~、$）
@@ -116,5 +127,7 @@ allow_empty_diff: false
 # Forbidden    - 额外禁止事项
 # Context      可选背景
 ```
+
+`allow_harness_changes: true` 只放开"框架文件被改"和"测试用例数减少"两项检查；删除测试文件、新增 skip/only、符号链接、`.git` 篡改仍然失败。
 
 标题也接受中文：目标 / 范围 / 验收 / 禁止 / 背景。`nova-relay brief-template` 打印模板。text 类任务（路由到 deepseek-text）只需要 Goal。

@@ -11,7 +11,7 @@ VPS 常开，承担：批次视图与 webhook 发送（coordinator）、运行 `
   npm i -g @openai/codex
   codex login            # 选择 ChatGPT 账号登录；不要设置 OPENAI_API_KEY / OPENAI_BASE_URL
   ```
-- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`（原 `@mariozechner/pi-coding-agent` 已弃用），`pi --version`。配置里的 `model` 默认 `deepseek-flash`（pi 1.5.2 内置目录中的 DeepSeek 模型：`deepseek-flash`、`deepseek-v4-pro`）；`DEEPSEEK_API_KEY=… pi --list-models deepseek` 可查看你的版本，`nova-relay doctor --live` 会向 DeepSeek `GET /models` 确认该名称可用。
+- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`（原 `@mariozechner/pi-coding-agent` 已弃用），`pi --version`。配置里 pi 与 deepseek-text 的 `model` **必须由你显式填写**（没有默认值，示例配置里是占位符 `<DEEPSEEK_MODEL_ID>`）：从 DeepSeek `GET /models` 返回的列表里选一个 id；`nova-relay doctor --live` 会核对该 id 是否原样在列表中，不在或列表读不到都是 FAIL。pi 自带的模型目录不作为依据。
 - DeepSeek API key（pi 与 deepseek-text 共用，变量名可配置，默认 `DEEPSEEK_API_KEY`）。
 
 ## 2. 安装
@@ -50,23 +50,25 @@ DEEPSEEK_API_KEY=<key>
 
 ## 4. 配置
 
-与 box 共用同一份 `config.json`，VPS 上 `self` 为 `vps`（或设置 `NOVA_RELAY_HOST=vps`）。`coordinator` 必须是 `vps`：它常开，能在 box 睡眠时发送 webhook。
+与 box 共用同一份 `config.json`，VPS 上 `self` 为 `vps`（或设置 `NOVA_RELAY_HOST=vps`）。`coordinator` 必须是 `vps`：它常开，box 睡眠时仍能检测心跳缺失并发出通知 webhook（通知不会唤醒 box）。
 
 ## 5. watchdog 做什么
 
 每 5 分钟：
 
 1. `tick`：flush outbox（重发失败的 webhook / rpc）、续跑本机过期租约的任务、检查 box 心跳、gc。
-2. 对每个运行执行者的远端主机（box）：`ssh box nova-relay rpc resume-all`（1/4/16 s 退避重试 3 次）。box 上发现 claude 分段进程死亡或冻结过久 → 从 checkpoint + progress 续跑（幂等）。
-3. ssh 不通 → 降级为心跳模式：box 的 tick 每 5 分钟向 VPS 推心跳；超过 `heartbeat_miss_minutes`（默认 15）没收到，且该批次还有 box 上的未完成任务 → 发一次 `box_unreachable` webhook，Grok 醒来后在 box 上执行 `nova-relay resume --all`。
+2. **检测 + 让运行中的 box 续跑**：对每个运行执行者的远端主机（box）执行 `ssh box nova-relay rpc resume-all`（1/4/16 s 退避重试 3 次）。box 在运行、但上面的 claude 分段进程死了或冻结过久 → 从 checkpoint + progress 续跑（幂等）。
+3. **ssh 不通**（box 睡眠、关机、Tailscale 断开）：watchdog 只记录 `unreachable_since`（`~/.nova-relay/run/host-box.json`，`doctor` 会显示），**什么也做不了**——ssh 不能唤醒或解冻一台挂起的机器，watchdog 也不能。
+4. **通知**：box 运行时它的 tick 每 5 分钟向 VPS 推心跳；超过 `heartbeat_miss_minutes`（默认 15）没收到，且该批次还有 box 上的未完成任务 → 每次中断发一次 `box_unreachable` webhook。它只唤醒 Grok 的 Routine 告诉用户，不会唤醒 box。
+5. **恢复后续跑**：box 再次运行后，它自己的 tick 定时器或下一次连上它的 watchdog 会续跑任务。在此之前 box 上的任务只能等待。
 
-> 这是**尽力而为**的恢复，不是可用性保证。部署后请按 [failure-modes.md](failure-modes.md) 的「必须实测的项目」实测。
+> 这是检测 + 通知 + 主机恢复后的续跑，**不是可用性保证**，没有零停机，也不会让睡着的 box 醒来。部署后请按 [failure-modes.md](failure-modes.md) 的「必须实测的项目」实测。
 
 ## 6. 验证
 
 ```bash
 nova-relay doctor
 nova-relay doctor --live # 可选：实查 codex 登录方式（必须是 ChatGPT 订阅）与 DeepSeek key
-nova-relay watchdog      # 手动跑一次，看 hosts.box 的结果
+nova-relay watchdog      # 手动跑一次，看 hosts.box：reachable / unreachable_since / resume 结果
 nova-relay outbox        # 有无积压/死信
 ```

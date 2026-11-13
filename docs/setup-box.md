@@ -81,4 +81,6 @@ nova-relay dispatch --project PD /tmp/smoke.md
 nova-relay pending --owner grok-pd
 ```
 
+验收在任务分支提交的干净检出里运行（不是执行者的 worktree），被 gitignore 的 `node_modules/` 等不存在：项目 `checks` 需要依赖时，在项目配置里写 `acceptance_setup`（如 `["npm ci --silent"]`），否则冒烟测试会因缺依赖 FAIL。
+
 然后按 [failure-modes.md](failure-modes.md) 末尾「必须实测的项目」逐项实测睡眠/重启/断网恢复。

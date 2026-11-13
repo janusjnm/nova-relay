@@ -26,10 +26,10 @@
 | `nova-relay worker [--once]` | 运行本机可运行任务（通常由 dispatch / tick 自动后台启动）；每台主机只有一个 worker，重复启动的会立即退出 |
 | `nova-relay resume --all` | 幂等：续跑租约失效的任务、到期的 paused 任务 |
 | `nova-relay tick` | 定时器入口：心跳 → resume → 心跳检查（coordinator）→ flush outbox → gc |
-| `nova-relay watchdog` | VPS 定时器入口：tick + 经 ssh 让各执行主机 resume |
+| `nova-relay watchdog` | VPS 定时器入口：tick + 经 ssh 让**正在运行**的执行主机 resume；连不上的主机只记录 `reachable: false` 与 `unreachable_since`（不能唤醒它） |
 | `nova-relay heartbeat` | 手动向 coordinator 推心跳 |
 | `nova-relay unpause <executor>` | 重新登录/充值后解除暂停，把 needs_auth/paused 任务重新排队并向 coordinator 上报 |
-| `nova-relay accept <task>` | 手动重跑验收（与 runner 相同：不带主机密钥的环境 + 项目 `env_file`，含 integrity 检查），打印 `PASS` / `FAIL <where>` |
+| `nova-relay accept <task>` | 手动重跑验收（与 runner 相同：任务分支提交的干净检出、白名单环境 + 空 HOME + 项目 `env_file`、篡改检查），打印 `PASS` / `FAIL <where>`；worktree 里有未提交改动时为 `FAIL uncommitted` |
 | `nova-relay outbox [--flush]` | 查看待发消息与死信（只有 webhook 会成为死信；主机间上报一直重试）；`--flush` 先把死信恢复为待发，再立即发送一次 |
 | `nova-relay gc` | 清理 ack 后（或已交接到别的主机）的 worktree，超过保留期的任务/批次/outbox，以及崩溃残留的 tmp/锁文件 |
 | `nova-relay rpc <method>` | 主机间调用（stdin/stdout JSON），供 ssh 使用 |

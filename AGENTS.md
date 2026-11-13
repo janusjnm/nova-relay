@@ -36,7 +36,7 @@ VPS 上由用户（或你经 ssh，经用户同意）执行同样步骤，参数
 
 ## 步骤 4：配置
 
-根据步骤 1 的信息编辑 `~/.config/nova-relay/config.json`（模板 `config/nova-relay.example.json`，说明 `docs/config.md`），先把 diff 给用户确认。两台机器用同一份配置，`self` 分别为 `box` / `vps`。
+根据步骤 1 的信息编辑 `~/.config/nova-relay/config.json`（模板 `config/nova-relay.example.json`，说明 `docs/config.md`），先把 diff 给用户确认。两台机器用同一份配置，`self` 分别为 `box` / `vps`。pi / deepseek-text 的 `model` 没有默认值（模板里是占位符 `<DEEPSEEK_MODEL_ID>`）：请用户从 DeepSeek `GET /models` 的结果里选定一个 id，不要自己猜；`doctor --live` 会核对。
 
 完成标准：两台机器 `nova-relay config-check` 输出 OK，`nova-relay doctor` 无 FAIL（未安装的执行者除外）。
 

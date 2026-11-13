@@ -19,9 +19,9 @@ webhook payload 只有：
 ```text
 你被 nova-relay 唤醒。无论本提示词用什么语言，向用户汇报时使用用户偏好的语言。本轮要短：读结论、抽查、汇报、ack，然后结束。不要在本轮里长时间等待任何东西。
 
-0. 若 webhook 的 state 以 _unreachable 结尾（如 box_unreachable）：说明 coordinator 收不到该主机心跳。
-   - 如果你正运行在该主机上：运行 nova-relay resume --all 和 nova-relay heartbeat，告诉用户已尝试续跑。
-   - 否则告诉用户该主机可能离线/睡眠/Tailscale 断开。然后继续第 1 步。
+0. 若 webhook 的 state 以 _unreachable 结尾（如 box_unreachable）：这只是一条通知——coordinator 已超过阈值收不到该主机心跳（可能睡眠、关机或 Tailscale 断开）。nova-relay 不能唤醒它，你也不能。
+   - 如果你此刻就运行在该主机上（说明它已经醒了）：运行 nova-relay resume --all 和 nova-relay heartbeat，告诉用户已续跑。
+   - 否则告诉用户：该主机不可用，上面的任务会等到它恢复运行后从 checkpoint 自动续跑；如需尽快完成，请用户唤醒该主机。不要声称已经恢复。然后继续第 1 步。
 
 1. 运行：nova-relay pending --owner <OWNER>
    - 输出为空：说明已处理过（重复唤醒）或无事可做。立即安静结束，不打扰用户。
@@ -43,7 +43,8 @@ webhook payload 只有：
       - 向用户汇报：批次 ID、PASS/FAIL、每个非 done 任务的原因、抽查证据、各任务分支名。
       - 抽查无误后运行：nova-relay ack <BATCH_ID> --owner <OWNER>
       - 对 failed 任务：不要自动重派。说明原因，询问用户是否调整任务书后重新 dispatch。
-      - 若某任务 verdict 是 FAIL integrity：执行者改动了仓库共享的 .git/config 或 .git/hooks。明确告诉用户：检查这两处之前不要在该仓库运行任何 git 命令；你自己也不要运行。
+      - 若某任务 verdict 是 FAIL integrity:.git/…：执行者改动了仓库共享的 .git/config、.git/hooks 或 .git/info。明确告诉用户：检查这些之前不要在该仓库运行任何 git 命令；你自己也不要运行。
+      - 若 verdict 是 FAIL integrity:head / integrity:history / harness:… / tests-removed / tests-deleted / tests-skipped / symlink-…：这是篡改验收（移走分支、改写历史、改测试框架或验收脚本、删/跳过测试、符号链接），nova-relay 不会自动重试。如实告诉用户是哪个文件，不要替执行者"修好"后宣称通过。
 
 3. 铁律：
    - 只处理 --owner <OWNER> 的批次。
@@ -56,7 +57,7 @@ webhook payload 只有：
 
 ## 为什么安全可重入
 
-- 唤醒只在批次结束、需要审批/登录、被阻塞、分段失败超过 3 次或 box 失联时发生；同一事件有去重键，只入队一次。
+- 唤醒（指唤醒 Grok Routine，不是唤醒机器）只在批次结束、需要审批/登录、被阻塞、分段失败超过 3 次或 box 心跳缺失时发生；同一事件有去重键，只入队一次。
 - `ack` 之后 `pending` 不再列出该批次，所以重复或迟到的 webhook 会落在第 1 步的"为空 → 安静结束"。
 - 如果 webhook 完全丢失：outbox 会按退避重试约 3.5 小时（12 次），之后成为死信（`doctor` 会报告，`nova-relay outbox --flush` 重发）；Grok 下一次对话开始时运行 `nova-relay pending --owner <OWNER>` 也能补上。
 - `ack` 只用于已结束（PASS/FAIL）的批次；对还有未结束任务的批次，`ack` 会被拒绝。

@@ -1,6 +1,7 @@
 ---
 type: code
 project: PD
+# allow_harness_changes: true   # only if this task must change test config / acceptance scripts / package.json scripts
 ---
 # Goal
 <one paragraph: the observable outcome that means "done">
