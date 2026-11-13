@@ -179,6 +179,15 @@ test("[real-runtime] LIVE bwrap end-to-end: strict executor + acceptance → PAS
   } finally { process.env.HOME = saved; }
 });
 
+test("[real-runtime] LIVE bwrap: a setsid'd background process does not outlive the sandbox (pid namespace)", { skip: liveSkip }, () => {
+  const ws = mkdtempSync(join(tmpdir(), "nova-live-bg-"));
+  const secs = 4000 + (process.pid % 900);
+  const sb = buildSandbox({ bin: LIVE.bin, cmd: "bash", args: ["-c", `setsid nohup sleep ${secs} >/dev/null 2>&1 & disown; echo started`], cwd: ws, env: { PATH: "/usr/bin:/bin" }, rw: [ws], network: false, policy: {} });
+  assert.match(spawnSync(sb.cmd, sb.args, { env: sb.env, encoding: "utf8", timeout: 30_000 }).stdout, /started/);
+  const survivors = spawnSync("ps", ["-eo", "comm=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.startsWith("sleep") && l.includes(`sleep ${secs}`));
+  assert.deepEqual(survivors, [], "background process ended with the sandbox");
+});
+
 test("[real-runtime] bwrap discovery reports the binary or the reason", () => {
   const b = findBwrap();
   if (b) assert.ok(existsSync(b)); else assert.equal(LIVE.ok, false);
