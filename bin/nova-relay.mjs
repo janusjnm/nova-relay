@@ -10,7 +10,11 @@ import { accept } from "../lib/acceptance.mjs";
 import { acceptanceEnv } from "../lib/runner.mjs";
 import { parseBrief, BRIEF_TEMPLATE } from "../lib/brief.mjs";
 import { unpauseExecutor } from "../lib/budget.mjs";
-import { VERSION } from "../lib/util.mjs";
+import { VERSION, redact } from "../lib/util.mjs";
+import { acceptanceIsolator } from "../lib/isolation.mjs";
+import { stats, statsLines } from "../lib/stats.mjs";
+import { readEvidence, recommend } from "../lib/evidence.mjs";
+import { migrationPlan, restore, snapshot } from "../lib/backup.mjs";
 
 const USAGE = `nova-relay ${VERSION}
 
@@ -34,11 +38,17 @@ operator commands
   worker [--once]          resume --all     tick     watchdog     heartbeat
   outbox [--flush]         gc               rpc <method> (JSON on stdin; used over ssh)
   (--flush also retries dead letters; --live makes doctor do real login/key checks, opt-in)
+  stats [--json]           today's measured usage (unknown ≠ 0), caps, pauses, notification counts
+  recommend [--json]       advisory routing evidence (sample size, confidence); never changes routing
+  snapshot [--out DIR]     metadata snapshot (no secrets, no git branches/worktrees)
+  restore --from DIR --dest DIR [--replay-outbox] [--json]
+                           restore drill into an empty dir (never the live home; starts nothing)
+  migrate --dry-run [--from DIR] [--json]   what this version can read + rollback plan
 config: $NOVA_RELAY_CONFIG or ~/.config/nova-relay/config.json`;
 
 function parseArgs(argv) {
   const pos = [], flags = {};
-  const VALUE = new Set(["project", "owner", "n", "key", "host"]);
+  const VALUE = new Set(["project", "owner", "n", "key", "host", "out", "from", "dest"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) { const k = a.slice(2); if (VALUE.has(k)) flags[k] = argv[++i]; else flags[k] = true; }
@@ -153,7 +163,7 @@ async function main() {
       const projectEnv = project.env_file ? readSecretEnvFile(project.env_file) : {};
       const r = await accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project,
         env: acceptanceEnv(ctx, projectEnv, project), repo: projectPaths(cfg, t.project).repo, integrity: t.integrity,
-        branch: t.branch || `nova/${id}`, scratch: join(projectPaths(cfg, t.project).worktrees, `.accept-${id}-cli`) });
+        branch: t.branch || `nova/${id}`, scratch: join(projectPaths(cfg, t.project).worktrees, `.accept-${id}-cli`), isolate: acceptanceIsolator(ctx) });
       out(r.line);
       return process.exit(r.pass ? 0 : 1);
     }
@@ -180,6 +190,49 @@ async function main() {
       return;
     }
     case "gc": return out(gc(ctx));
+    case "stats": {
+      const s = stats(cfg);
+      if (flags.json) return out(s);
+      for (const l of statsLines(s)) out(l);
+      return;
+    }
+    case "recommend": {
+      const r = recommend(cfg, readEvidence(cfg.home));
+      if (flags.json) return out(r);
+      out(`recommend (advisory; ${r.records} terminal tasks recorded on ${cfg.self}; routing is never changed automatically)`);
+      for (const t of r.types) {
+        out(`  ${t.type}: configured ${t.configured ?? "-"} — ${t.advice}`);
+        for (const e of t.executors) out(`    ${e.executor}: n=${e.samples} pass ${e.pass}/${e.samples} (95% ${e.pass_rate_95.join("–")}) [${e.confidence}] median ${e.median_elapsed_minutes ?? "-"} min, retries ${e.mean_local_retries ?? "-"}, cost ${e.mean_cost_usd_measured ?? "unknown"}${e.cost_samples ? ` USD measured (n=${e.cost_samples})` : ""}`);
+      }
+      return out(`  ${r.note}`);
+    }
+    case "snapshot": {
+      const r = snapshot(cfg, { out: typeof flags.out === "string" ? flags.out : undefined });
+      if (flags.json) return out(r);
+      out(redact(`snapshot ${r.id}: ${r.files} files, ${r.bytes} bytes → ${r.dir}`));
+      for (const sk of r.skipped) out(redact(`  skipped ${sk}`));
+      for (const x of r.excluded) out(`  excluded: ${x}`);
+      return;
+    }
+    case "restore": {
+      const r = restore(cfg, { from: need(typeof flags.from === "string" ? flags.from : null, "--from"), dest: need(typeof flags.dest === "string" ? flags.dest : null, "--dest"), replayOutbox: Boolean(flags["replay-outbox"]) });
+      if (flags.json) return out(r);
+      out(redact(`restored ${r.snapshot} → ${r.dest}: ${r.files} files; blocked ${r.blocked.length} unfinished tasks; ${r.held_outbox} outbox entries held${r.replay_outbox ? " (replay requested: NOT held)" : ""}; no worker started`));
+      return out(r.note);
+    }
+    case "migrate": {
+      if (!flags["dry-run"]) { console.error("nova-relay migrate: only --dry-run is supported (this version needs no migration; nothing is rewritten)"); return process.exit(2); }
+      const r = migrationPlan(cfg, { from: typeof flags.from === "string" ? flags.from : undefined });
+      if (flags.json) return out(r);
+      out(`migrate --dry-run: ${r.source}; this is nova-relay ${r.relay_version} (state schema ${r.state_schema}, config schema ${r.config_schema}, snapshot format ${r.snapshot_format})`);
+      out(`  found: tasks by schema ${JSON.stringify(r.found.tasks)}, batches ${JSON.stringify(r.found.batches)}, newer ${r.found.newer}, unreadable ${r.found.unreadable}`);
+      for (const x of r.can_read) out(`  can read: ${x}`);
+      for (const x of r.cannot_read) out(`  cannot read: ${x}`);
+      out(`  migrations: ${r.migrations}`);
+      for (const x of r.rollback) out(`  rollback ${x}`);
+      for (const x of r.excluded) out(`  not in a snapshot: ${x}`);
+      return process.exit(r.found.newer ? 1 : 0);
+    }
     case "doctor": {
       const res = await doctor(ctx, { remote: !flags["no-remote"], live: Boolean(flags.live) });
       for (const r of res) out(`${r.level.padEnd(4)} ${r.name}: ${r.detail}`);

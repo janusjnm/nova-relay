@@ -113,7 +113,11 @@ test("heartbeat fallback: missed box heartbeat wakes once per outage", async () 
   const e = ctx.outbox.pending()[0];
   assert.deepEqual(e.payload, { source: "nova-relay", batch: "b-4", id: "*", state: "box_unreachable", exit_code: null });
   writeFileSync(join(cfg.home, "run", "heartbeat-box.json"), JSON.stringify({ received_at: new Date(later).toISOString() }));
-  assert.equal(checkHeartbeats(ctx, later + 30 * 60_000).length, 1, "new outage after recovery wakes again");
+  // A new outage inside notify_cooldown_minutes (60) of the last wake is coalesced (flapping link);
+  // once the cooldown has passed and the host is still out, it wakes again.
+  assert.equal(checkHeartbeats(ctx, later + 30 * 60_000).length, 0, "flapping: new outage within the cooldown → no wake");
+  assert.equal(checkHeartbeats(ctx, later + 61 * 60_000).length, 1, "new outage after the cooldown wakes again");
+  assert.equal(checkHeartbeats(ctx, later + 62 * 60_000).length, 0, "and only once");
 });
 
 test("verdict line is one line", () => {

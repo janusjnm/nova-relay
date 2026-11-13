@@ -20,7 +20,11 @@ writeFileSync(countFile, String(n));
 appendFileSync(join(taskDir, "fake-args.jsonl"), JSON.stringify(args) + "\n");
 const result = (text, isError = false) => {
   console.log(JSON.stringify({ type: "system", subtype: "init" }));
-  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: isError, result: text, session_id: "sess-" + n, total_cost_usd: 0.01 }));
+  // FAKE_NO_COST: no total_cost_usd (unknown, not 0); FAKE_USAGE: a JSON `usage` object to report.
+  const ev = { type: "result", subtype: "success", is_error: isError, result: text, session_id: "sess-" + n };
+  if (!process.env.FAKE_NO_COST) ev.total_cost_usd = 0.01;
+  if (process.env.FAKE_USAGE) ev.usage = JSON.parse(process.env.FAKE_USAGE);
+  console.log(JSON.stringify(ev));
 };
 const write = (p, s) => { mkdirSync(join(process.cwd(), p, ".."), { recursive: true }); writeFileSync(join(process.cwd(), p), s); };
 const hook = (tool, input) => spawnSync(process.execPath, [process.env.HOOK], { input: JSON.stringify({ tool_name: tool, tool_input: input }), encoding: "utf8", env: process.env });

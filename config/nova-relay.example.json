@@ -22,7 +22,16 @@
     "min_free_mb": 2048,
     "retention_days": 7,
     "max_log_bytes": 2097152,
-    "max_parallel": 2
+    "max_parallel": 2,
+    "notify_cooldown_minutes": 60
+  },
+  "isolation": {
+    "_comment": "opt-in OS isolation (bubblewrap). off = unchanged. strict = sandboxed steps never run unsandboxed; see docs/security.md",
+    "mode": "off",
+    "adapter": "bwrap",
+    "apply_to": ["acceptance", "executor"],
+    "acceptance_network": false,
+    "ro_binds": []
   },
   "executors": {
     "claude": {
