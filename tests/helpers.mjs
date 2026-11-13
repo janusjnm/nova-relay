@@ -6,9 +6,24 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { normalizeConfig } from "../lib/config.mjs";
 import { makeContext } from "../lib/relay.mjs";
+import { ENV_DENY } from "../lib/runner.mjs";
 
 export const FAKE = fileURLToPath(new URL("./fixtures/fake-agent.mjs", import.meta.url));
 export const HOOK = fileURLToPath(new URL("../bin/nova-guard-hook.mjs", import.meta.url));
+
+// Operator env that must never reach a test or a CLI it spawns: nova-relay overrides
+// (NOVA_RELAY_HOME/CONFIG/SECRETS/HOST would point the CLI at a real or integration home),
+// task/guard vars, executor provider keys/endpoints, fake-agent modes, and anything that looks
+// like a webhook URL or secret (same name rule as runner ENV_DENY, plus *_URL webhook names).
+const OPERATOR_ENV = /^NOVA_|^FAKE_|^HOOK$|^(ANTHROPIC|OPENAI|DEEPSEEK|CLAUDE|CODEX)_|_URL$/i;
+
+// Child/test env built from process.env with operator nova-relay and secret vars stripped; the
+// test then adds only the explicit temp values it needs (NOVA_RELAY_CONFIG, PD_URL, FAKE_MODE, ...).
+export function isolatedEnv(extra = {}) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (!OPERATOR_ENV.test(k) && !ENV_DENY.test(k)) env[k] = v;
+  return { ...env, ...extra };
+}
 
 export function sh(cwd, cmd) {
   const r = spawnSync("bash", ["-c", cmd], { cwd, encoding: "utf8" });
@@ -43,7 +58,7 @@ export function testConfig(root, repo, overrides = {}) {
 }
 
 export function testContext(cfg, envExtra = {}, opts = {}) {
-  const env = { ...process.env, HOME: process.env.HOME, PD_URL: "https://grok.example/hook", PD_KEY: "k".repeat(20), HOOK, ...envExtra };
+  const env = isolatedEnv({ PD_URL: "https://grok.example/hook", PD_KEY: "k".repeat(20), HOOK, ...envExtra });
   const sent = [];
   const fetchImpl = async (url, init) => { sent.push({ url, body: JSON.parse(init.body), headers: init.headers }); return { ok: true, status: 200, text: async () => "{}" }; };
   const ctx = makeContext(cfg, { env, fetchImpl, spawnWorker: () => {}, backoffScale: 0, ...opts });

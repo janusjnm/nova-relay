@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { checkCommand, checkWritePath, splitCommands } from "../lib/guard.mjs";
 import { decide, guardDecision, pendingApprovals } from "../lib/approvals.mjs";
-import { HOOK } from "./helpers.mjs";
+import { HOOK, isolatedEnv } from "./helpers.mjs";
 
 const BLOCK = {
   disaster: ["rm -rf /", "rm -rf /*", "rm -r ~", "rm -R /home", "rm --recursive /var", "rm -rf $HOME", "rm -rf /workspace",
@@ -85,7 +85,7 @@ test("approval requests never persist secrets", () => {
 test("Claude PreToolUse hook script: exit 2 blocks, exit 0 allows", () => {
   const dir = mkdtempSync(join(tmpdir(), "nova-hook-"));
   const run = (tool, input) => spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ tool_name: tool, tool_input: input }), encoding: "utf8",
-    env: { ...process.env, NOVA_TASK_DIR: dir, NOVA_WORKDIR: "/w/t1", NOVA_FORBIDDEN: JSON.stringify([".github/**"]) } });
+    env: isolatedEnv({ NOVA_TASK_DIR: dir, NOVA_WORKDIR: "/w/t1", NOVA_FORBIDDEN: JSON.stringify([".github/**"]) }) });
   assert.equal(run("Bash", { command: "ls" }).status, 0);
   const b = run("Bash", { command: "git push origin main" });
   assert.equal(b.status, 2);

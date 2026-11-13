@@ -325,10 +325,10 @@ test("heartbeat notification payload says unreachable (a notification, not a wak
 
 test("Claude hook: the Bash tool's persisted cwd (hook input `cwd`) is where relative targets resolve", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { HOOK } = await import("./helpers.mjs");
+  const { HOOK, isolatedEnv } = await import("./helpers.mjs");
   const wd = workdir({ "sub/keep.txt": "x" });
   const hook = (command, cwd) => spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd }), encoding: "utf8",
-    env: { ...process.env, NOVA_WORKDIR: wd, NOVA_TASK_DIR: "", NOVA_GUARD_POLICY: "{}", NOVA_FORBIDDEN: "[]" } }).status;
+    env: isolatedEnv({ NOVA_WORKDIR: wd, NOVA_TASK_DIR: "", NOVA_GUARD_POLICY: "{}", NOVA_FORBIDDEN: "[]" }) }).status;
   assert.equal(hook("rm -rf other", wd), 0);
   assert.equal(hook("rm -rf other", join(wd, "sub")), 0);
   assert.equal(hook("touch etc/x", "/"), 2, "shell is at / after an earlier cd: relative write lands in /etc");

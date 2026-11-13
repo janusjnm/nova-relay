@@ -13,7 +13,7 @@ import { acquireLease, leaseStatus, readLease } from "../lib/lock.mjs";
 import { normalizeConfig } from "../lib/config.mjs";
 import { HANDLERS, KeyConflictError, SUBMIT_GRACE_MS, batchOutcome, dispatch, dispatchExitCode, flushOutbox, gc, reconcileSubmits, resumeAll, tick, verdictLine, worker } from "../lib/relay.mjs";
 import { RpcError } from "../lib/rpc.mjs";
-import { BRIEF, FAKE, tempRepo, testConfig, testContext } from "./helpers.mjs";
+import { BRIEF, FAKE, isolatedEnv, tempRepo, testConfig, testContext } from "./helpers.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/nova-relay.mjs", import.meta.url));
 const deadPid = () => Number(spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" }).stdout.trim());
@@ -151,7 +151,7 @@ test("CLI dispatch --key --json: machine-readable outcome, same key → same bat
     routing: { rules: [{ type: "code", executor: "claude" }] },
     projects: { PD: { repo, base: "main", owner: "grok", worktrees: join(root, "wt"), webhook: { url_env: "PD_URL", key_env: "PD_KEY" } } },
   }));
-  const env = { ...process.env, NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_URL: "https://127.0.0.1:9/x", PD_KEY: "k".repeat(20), FAKE_MODE: "ok" };
+  const env = isolatedEnv({ NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_URL: "https://127.0.0.1:9/x", PD_KEY: "k".repeat(20), FAKE_MODE: "ok" });
   writeFileSync(join(root, "a.md"), BRIEF());
   writeFileSync(join(root, "b.md"), BRIEF("changed"));
   const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8" });

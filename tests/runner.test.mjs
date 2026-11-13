@@ -245,5 +245,5 @@ test("doctor reports problems without crashing", async () => {
   assert.equal(by["executor claude cli"], "OK");
   assert.equal(by["project PD"], "OK");
   assert.equal(by["webhook PD"], "OK");
-  assert.equal(by["executor deepseek-text auth"], process.env.DEEPSEEK_API_KEY ? "OK" : "FAIL");
+  assert.equal(by["executor deepseek-text auth"], "FAIL", "operator DEEPSEEK_API_KEY is stripped from the test env");
 });

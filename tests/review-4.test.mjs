@@ -19,7 +19,7 @@ import { loadSecrets, normalizeConfig } from "../lib/config.mjs";
 import { Outbox, postWebhook } from "../lib/notify.mjs";
 import { HANDLERS, dispatch, worker } from "../lib/relay.mjs";
 import { redact } from "../lib/util.mjs";
-import { BRIEF, sh, tempRepo, testConfig, testContext } from "./helpers.mjs";
+import { BRIEF, isolatedEnv, sh, tempRepo, testConfig, testContext } from "./helpers.mjs";
 
 const git = (cwd, cmd) => sh(cwd, `git -c user.name=t -c user.email=t@t ${cmd}`);
 function taskTree(files = {}) {
@@ -203,7 +203,7 @@ test("secrets: config-declared env names (webhook url/key, executor key_env) and
   const { root, repo } = tempRepo();
   const sec = join(root, "secrets.env");
   writeFileSync(sec, "ODD_NAMED_THING=abcdefgh-not-a-pattern-123\n", { mode: 0o600 });
-  const env = { ...process.env, NOVA_RELAY_SECRETS: sec };
+  const env = isolatedEnv({ NOVA_RELAY_SECRETS: sec });
   assert.equal(loadSecrets(env).loaded, 1);
   const cfg = testConfig(root, repo, { projects: { PD: { repo, worktrees: join(root, "wt"), webhook: { url_env: "PD_HOOK", key_env: "PD_BEARER" }, acceptance_env_pass: ["ODD_NAMED_THING"] } } });
   const ctx = testContext(cfg, { ...env, PD_HOOK: "https://grok.example/r/route-id-1", PD_BEARER: "bearer-value-zzzzzz" });

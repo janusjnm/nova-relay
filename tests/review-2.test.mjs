@@ -15,7 +15,7 @@ import { pendingApprovals } from "../lib/approvals.mjs";
 import { ConfigError, normalizeConfig } from "../lib/config.mjs";
 import { Outbox } from "../lib/notify.mjs";
 import { HANDLERS, dispatch } from "../lib/relay.mjs";
-import { BRIEF, tempRepo, testConfig, testContext } from "./helpers.mjs";
+import { BRIEF, isolatedEnv, tempRepo, testConfig, testContext } from "./helpers.mjs";
 
 const FIX = fileURLToPath(new URL("./fixtures/cli/", import.meta.url));
 const LIB = fileURLToPath(new URL("../lib/", import.meta.url));
@@ -175,7 +175,7 @@ test("CLI accept runs acceptance without host secrets", async () => {
   writeFileSync(cfgPath, JSON.stringify({ ...JSON.parse(JSON.stringify(cfg)), schema: 1 }));
   const CLI = fileURLToPath(new URL("../bin/nova-relay.mjs", import.meta.url));
   const r = await new Promise((res) => {
-    const c = spawn(process.execPath, [CLI, "accept", id], { env: { ...process.env, NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_KEY: "k".repeat(20), NOVA_RELAY_X_TOKEN: "t".repeat(20) } });
+    const c = spawn(process.execPath, [CLI, "accept", id], { env: isolatedEnv({ NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_KEY: "k".repeat(20), NOVA_RELAY_X_TOKEN: "t".repeat(20) }) });
     let out = ""; c.stdout.on("data", (x) => { out += x; }); c.stderr.on("data", (x) => { out += x; });
     c.on("close", (code) => res({ code, out }));
   });

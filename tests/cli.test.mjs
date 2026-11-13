@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Store } from "../lib/store.mjs";
 import { Outbox } from "../lib/notify.mjs";
 import { pauseExecutor, readPaused } from "../lib/budget.mjs";
-import { BRIEF, FAKE, tempRepo } from "./helpers.mjs";
+import { BRIEF, FAKE, isolatedEnv, tempRepo } from "./helpers.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/nova-relay.mjs", import.meta.url));
 
@@ -23,7 +23,7 @@ test("CLI: unpause, outbox --flush revive, log, cancel owner check", () => {
     routing: { rules: [{ type: "code", executor: "claude" }] },
     projects: { PD: { repo, base: "main", owner: "grok", webhook: { url_env: "PD_URL", key_env: "PD_KEY" } } },
   }));
-  const env = { ...process.env, NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_URL: "https://127.0.0.1:9/x", PD_KEY: "k".repeat(20) };
+  const env = isolatedEnv({ NOVA_RELAY_CONFIG: cfgPath, NOVA_RELAY_SECRETS: join(root, "none.env"), PD_URL: "https://127.0.0.1:9/x", PD_KEY: "k".repeat(20) });
   const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8" });
 
   assert.match(cli("config-check").stdout, /^OK /);
