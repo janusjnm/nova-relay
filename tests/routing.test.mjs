@@ -66,7 +66,7 @@ test("config validation gives clear, path-qualified errors", () => {
   assert.ok(problems((r) => { r.executors.codex.args = ["--dangerously-bypass-approvals-and-sandbox"]; }).some((p) => p.includes("sandbox bypass")));
   assert.ok(problems((r) => { r.executors.x = { adapter: "nope" }; }).some((p) => p.startsWith("executors.x.adapter")));
   assert.ok(problems((r) => { r.routing.rules[0].executor = "ghost"; }).some((p) => p.includes('unknown executor "ghost"')));
-  assert.ok(problems((r) => { r.projects.NM.repo = "/srv/pd/sub"; r.projects.PD.repo = "/srv/pd"; }).some((p) => p.includes("overlaps")));
+  assert.ok(problems((r) => { r.projects.NM.repo = "/srv/pd/sub"; r.projects.PD.repo = "/srv/pd"; }).some((p) => p.includes("projects must be isolated")));
   assert.ok(problems((r) => { r.projects.PD.repo = "relative/path"; }).some((p) => p.includes("absolute")));
   assert.ok(problems((r) => { r.hosts.vps = {}; }).some((p) => p.includes("hosts.vps.ssh")));
   assert.ok(problems((r) => { r.limits = { max_segments: 0 }; }).some((p) => p.includes("limits.max_segments")));

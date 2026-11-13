@@ -37,6 +37,9 @@ for d in bin lib extensions systemd config templates routines skills; do
 done
 cp "$SRC/package.json" "$SRC/LICENSE" "$SRC/NOTICE" "$DEST/"
 chmod +x "$DEST/bin/nova-relay" "$DEST/bin/nova-relay.mjs" "$DEST/bin/nova-guard-hook.mjs"
+# ssh/systemd run with a minimal PATH (nvm / custom Node installs are not on it): record node.
+command -v node > "$DEST/bin/.node-path.tmp" && mv "$DEST/bin/.node-path.tmp" "$DEST/bin/.node-path"
+echo "  ok node for timers/ssh: $(cat "$DEST/bin/.node-path")"
 
 # Atomic switch: new symlink next to the old one, then rename over it.
 ln -sfn "$DEST" "$PREFIX/current.tmp.$$"

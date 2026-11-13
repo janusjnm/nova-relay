@@ -21,12 +21,13 @@ planner (Grok) commands
   status <task> [--json]   log <task> [-n N]             task detail / recent events
   approve <task> <req> [--owner O]   deny <task> <req> [--owner O]
   ack <batch> [--owner O]                                acknowledge after spot-checking (enables cleanup)
-  cancel <task>            brief-template                print a brief template
+  cancel <task> [--owner O]   brief-template             print a brief template
 
 operator commands
-  doctor [--no-remote]     config-check     unpause <executor>     accept <task>
+  doctor [--no-remote] [--live]   config-check   unpause <executor>   accept <task>
   worker [--once]          resume --all     tick     watchdog     heartbeat
   outbox [--flush]         gc               rpc <method> (JSON on stdin; used over ssh)
+  (--flush also retries dead letters; --live makes doctor do real login/key checks, opt-in)
 config: $NOVA_RELAY_CONFIG or ~/.config/nova-relay/config.json`;
 
 function parseArgs(argv) {
@@ -112,14 +113,14 @@ async function main() {
     }
     case "log": {
       const id = need(pos[0], "task id");
-      for (const e of ctx.store.events(id, Number(flags.n || 30))) out(`${showTime(ctx, e.ts)} ${e.type} ${e.text}`);
+      for (const e of await onTaskHost(ctx, id, "log", { id, n: Number(flags.n || 30) })) out(`${showTime(ctx, e.ts)} ${e.type} ${e.text}`);
       return;
     }
     case "approve": case "deny": {
       const [id, req] = [need(pos[0], "task id"), need(pos[1], "req")];
       return out(await onTaskHost(ctx, id, cmd, { id, req, owner: flags.owner }));
     }
-    case "cancel": { const id = need(pos[0], "task id"); return out(await onTaskHost(ctx, id, "cancel", { id })); }
+    case "cancel": { const id = need(pos[0], "task id"); return out(await onTaskHost(ctx, id, "cancel", { id, owner: flags.owner })); }
     case "accept": {
       const id = need(pos[0], "task id");
       const t = ctx.store.get(id);
@@ -132,7 +133,11 @@ async function main() {
       const ex = need(pos[0], "executor");
       unpauseExecutor(cfg.home, ex);
       if (cfg.coordinator !== cfg.self) await coord("executor-unpaused", { executor: ex }).catch((e) => console.error(`coordinator: ${e.message}`));
-      for (const t of ctx.store.list()) if (t.executor === ex && ["needs_auth", "paused"].includes(t.state) && !t.acked) ctx.store.update(t.id, { state: "queued", resume_after: null });
+      for (const t of ctx.store.list()) {
+        if (t.executor !== ex || t.acked) continue;
+        const nt = ctx.store.transition(t.id, (cur) => (["needs_auth", "paused"].includes(cur.state) ? { state: "queued", resume_after: null, reason: `${ex} unpaused`, rev: (cur.rev || 0) + 1 } : null));
+        if (nt.state === "queued" && nt.rev !== t.rev) await ctx.report(nt);
+      }
       ctx.spawnWorker();
       return out(`unpaused ${ex}`);
     }
@@ -142,13 +147,13 @@ async function main() {
     case "watchdog": return out(await watchdog(ctx));
     case "heartbeat": return out(await coord("heartbeat", { host: cfg.self }));
     case "outbox": {
-      if (flags.flush) out(await flushOutbox(ctx));
+      if (flags.flush) { const n = ctx.outbox.reviveDead(); if (n) out(`revived ${n} dead letters`); out(await flushOutbox(ctx)); }
       for (const e of ctx.outbox.pending()) out(`${e.dead ? "DEAD" : "queued"} ${e.kind} ${e.key} attempts=${e.attempts} ${e.last_error || ""}`);
       return;
     }
     case "gc": return out(gc(ctx));
     case "doctor": {
-      const res = await doctor(ctx, { remote: !flags["no-remote"] });
+      const res = await doctor(ctx, { remote: !flags["no-remote"], live: Boolean(flags.live) });
       for (const r of res) out(`${r.level.padEnd(4)} ${r.name}: ${r.detail}`);
       return process.exit(res.some((r) => r.level === "FAIL") ? 1 : 0);
     }

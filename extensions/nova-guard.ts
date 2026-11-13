@@ -2,12 +2,18 @@
  * nova-guard.ts — Pi coding agent extension (renamed from upstream pi-guard).
  * Every bash/edit/write tool call goes through lib/guard.mjs via the shared approval flow.
  * There is no off switch: disabling the guard requires changing the code.
+ * On load it writes <task>/guard-loaded; the runner blocks the task if that marker is missing.
  */
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { guardDecision } from "../lib/approvals.mjs";
 
 export default function (pi: any) {
+  const env = process.env;
+  if (env.NOVA_TASK_DIR) {
+    try { appendFileSync(join(env.NOVA_TASK_DIR, "guard-loaded"), `${process.pid}\n`); } catch { /* runner will notice */ }
+  }
   pi.on("tool_call", async (event: any) => {
-    const env = process.env;
     const base = {
       taskDir: env.NOVA_TASK_DIR,
       policy: JSON.parse(env.NOVA_GUARD_POLICY || "{}"),
@@ -19,7 +25,8 @@ export default function (pi: any) {
     if (event?.toolName === "bash" && typeof input.command === "string") {
       d = guardDecision({ ...base, kind: "bash", subject: input.command });
     } else if ((event?.toolName === "write" || event?.toolName === "edit") && typeof input.path === "string") {
-      d = guardDecision({ ...base, kind: "write", subject: input.path });
+      // Pi's built-in tools strip a leading "@" before resolving the path; so does the guard.
+      d = guardDecision({ ...base, kind: "write", subject: input.path.replace(/^@/, "") });
     }
     if (d.allow) return undefined;
     process.stderr.write(`[nova-guard] ${d.reason}\n`);
