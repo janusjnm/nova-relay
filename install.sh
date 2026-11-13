@@ -28,7 +28,7 @@ if [ "$(printf '%s\n2.38\n' "$GIT_VER" | sort -V | head -1)" != "2.38" ]; then
 fi
 echo "  ok node $(node -v), git $GIT_VER"
 
-VERSION=$(node -p "require('$SRC/package.json').version")
+VERSION=$(node -p 'require(process.argv[1]).version' "$SRC/package.json")
 DEST="$PREFIX/versions/$VERSION"
 echo "==> installing nova-relay $VERSION to $DEST"
 mkdir -p "$DEST" "$BIN_DIR" "$CONF_DIR"
@@ -64,8 +64,26 @@ if [ -n "$ROLE" ]; then
   mkdir -p "$UNIT_DIR"
   if [ "$ROLE" = box ]; then UNITS="nova-relay-tick.service nova-relay-tick.timer"; TIMER=nova-relay-tick.timer
   else UNITS="nova-relay-watchdog.service nova-relay-watchdog.timer"; TIMER=nova-relay-watchdog.timer; fi
-  for u in $UNITS; do cp "$SRC/systemd/$u" "$UNIT_DIR/$u"; done
-  echo "  ok installed $UNITS to $UNIT_DIR"
+  # ExecStart must point at the bin dir actually used (NOVA_RELAY_BIN_DIR may differ from the
+  # default ~/.local/bin). A unit the user edited since the last install is not overwritten: the
+  # new version goes next to it as <unit>.nova-new.
+  mkdir -p "$PREFIX/units"
+  for u in $UNITS; do
+    content="$(cat "$SRC/systemd/$u")"
+    if [ "$BIN_DIR" != "$HOME/.local/bin" ]; then
+      content="${content//%h\/.local\/bin\/nova-relay/"\"$BIN_DIR/nova-relay\""}"
+    fi
+    printf '%s\n' "$content" > "$UNIT_DIR/.$u.tmp.$$"
+    if [ -e "$UNIT_DIR/$u" ] && ! cmp -s "$UNIT_DIR/$u" "$UNIT_DIR/.$u.tmp.$$" \
+       && ! { [ -e "$PREFIX/units/$u" ] && cmp -s "$UNIT_DIR/$u" "$PREFIX/units/$u"; }; then
+      mv "$UNIT_DIR/.$u.tmp.$$" "$UNIT_DIR/$u.nova-new"
+      echo "  !! kept your edited $UNIT_DIR/$u; the new version is $UNIT_DIR/$u.nova-new (merge it by hand)"
+    else
+      cp "$UNIT_DIR/.$u.tmp.$$" "$PREFIX/units/$u"
+      mv "$UNIT_DIR/.$u.tmp.$$" "$UNIT_DIR/$u"
+      echo "  ok installed $UNIT_DIR/$u"
+    fi
+  done
   echo "     enable with: systemctl --user daemon-reload && systemctl --user enable --now $TIMER"
   echo "     (and: loginctl enable-linger \$USER so it runs without a login session)"
 fi

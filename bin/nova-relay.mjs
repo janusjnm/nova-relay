@@ -129,9 +129,9 @@ async function main() {
       // Same conditions as the runner: repo-controlled commands never see host secrets.
       const project = cfg.projects[t.project];
       const projectEnv = project.env_file ? readSecretEnvFile(project.env_file) : {};
-      const r = accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project,
+      const r = await accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project,
         env: acceptanceEnv(ctx, projectEnv, project), repo: projectPaths(cfg, t.project).repo, integrity: t.integrity,
-        branch: t.branch || `nova/${id}`, scratch: join(projectPaths(cfg, t.project).worktrees, `.accept-${id}`) });
+        branch: t.branch || `nova/${id}`, scratch: join(projectPaths(cfg, t.project).worktrees, `.accept-${id}-cli`) });
       out(r.line);
       return process.exit(r.pass ? 0 : 1);
     }

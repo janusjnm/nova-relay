@@ -187,31 +187,31 @@ function taskTree(baseFiles = {}, files = {}) {
 const briefOf = (acc, extra = "", scope = "- **") => parseBrief(`---\ntype: code\n${extra}---\n# Goal\ng\n# Scope\n${scope}\n# Acceptance\n${acc}\n`);
 const run = (tt, brief, more = {}) => accept({ workdir: tt.wt, base: tt.base, brief, repo: tt.repo, integrity: tt.integrity, branch: "nova/t-1", ...more });
 
-test("acceptance runs in a clean checkout of the commit: ignored/untracked files planted by the executor do not count", () => {
+test("acceptance runs in a clean checkout of the commit: ignored/untracked files planted by the executor do not count", async () => {
   const tt = taskTree({ ".gitignore": ".cache/\n" }, { "src/a.txt": "a\n" });
   mkdirSync(join(tt.wt, ".cache"));
   writeFileSync(join(tt.wt, ".cache", "verified"), "PASS\n"); // ignored: never committed
-  const r = run(tt, briefOf("test -f .cache/verified"));
+  const r = await run(tt, briefOf("test -f .cache/verified"));
   assert.equal(r.pass, false, "the planted ignored file is not in the checkout");
   assert.match(r.line, /^FAIL cmd:test -f \.cache\/verified/);
-  assert.equal(run(tt, briefOf("test -f src/a.txt")).pass, true);
+  assert.equal((await run(tt, briefOf("test -f src/a.txt"))).pass, true);
   assert.equal(existsSync(join(tt.root, "wt", ".accept-t-1")), false, "scratch checkout removed");
   // Uncommitted leftovers are not part of the work.
   writeFileSync(join(tt.wt, "src", "late.txt"), "x");
-  assert.match(run(tt, briefOf("true")).line, /^FAIL uncommitted/);
+  assert.match((await run(tt, briefOf("true"))).line, /^FAIL uncommitted/);
 });
 
-test("acceptance env: allowlist only (no host secrets, no executor-set vars), empty HOME, no shell startup files", () => {
+test("acceptance env: allowlist only (no host secrets, no executor-set vars), empty HOME, no shell startup files", async () => {
   const ctx = { env: { PATH: "/usr/bin:/bin", HOME: "/home/real", OPENAI_API_KEY: "x", MY_TOKEN: "x", RANDOM_VAR: "1", BASH_ENV: "/tmp/evil", GOCACHE: "/c", LANG: "C.UTF-8" } };
   const env = acceptanceEnv(ctx, { PROJ: "1" }, { acceptance_env_pass: ["GOCACHE"] });
   assert.deepEqual(Object.keys(env).sort(), ["CI", "GIT_TERMINAL_PROMPT", "GOCACHE", "LANG", "PATH", "PROJ"]);
   assert.throws(() => normalizeConfig({ self: "box", hosts: { box: {} }, projects: { P: { repo: "/r", acceptance_env_pass: ["GH_TOKEN"] } } }, {}), /looks like a secret/);
   const tt = taskTree({}, { "src/a.txt": "a\n" });
-  const r = run(tt, briefOf('case "$HOME" in /home/real|"") exit 1;; esac; test ! -e "$HOME/.ssh" && test -z "$RANDOM_VAR" && test -z "$BASH_ENV"'), { env });
+  const r = await run(tt, briefOf('case "$HOME" in /home/real|"") exit 1;; esac; test ! -e "$HOME/.ssh" && test -z "$RANDOM_VAR" && test -z "$BASH_ENV"'), { env });
   assert.equal(r.pass, true, r.detail);
 });
 
-test("acceptance tamper checks are fatal (not retried): harness, referenced script, package scripts, removed tests, symlinks, HEAD, history", () => {
+test("acceptance tamper checks are fatal (not retried): harness, referenced script, package scripts, removed tests, symlinks, HEAD, history", async () => {
   const base = { "check.sh": "#!/bin/sh\ntest -f src/a.txt\n", "package.json": JSON.stringify({ scripts: { test: "node --test" }, dependencies: {} }, null, 2),
     "tests/a.test.js": "test('one', () => {});\ntest('two', () => {});\n", "Makefile": "check:\n\ttrue\n" };
   const cases = [
@@ -224,37 +224,37 @@ test("acceptance tamper checks are fatal (not retried): harness, referenced scri
   ];
   for (const [files, re] of cases) {
     const tt = taskTree(base, { "src/a.txt": "a\n", ...files });
-    const r = run(tt, briefOf("sh check.sh"));
+    const r = await run(tt, briefOf("sh check.sh"));
     assert.match(r.line, re);
     assert.equal(r.fatal, true, `${r.line} is fatal`);
   }
   // Dependencies may change; scripts may not.
   const deps = taskTree(base, { "src/a.txt": "a\n", "package.json": JSON.stringify({ scripts: { test: "node --test" }, dependencies: { x: "1" } }, null, 2) });
-  assert.equal(run(deps, briefOf("sh check.sh")).pass, true);
+  assert.equal((await run(deps, briefOf("sh check.sh"))).pass, true);
   // The brief can allow harness work explicitly.
   const ok = taskTree(base, { "src/a.txt": "a\n", "Makefile": "check:\n\techo new\n" });
-  assert.equal(run(ok, briefOf("sh check.sh", "allow_harness_changes: true\n")).pass, true);
+  assert.equal((await run(ok, briefOf("sh check.sh", "allow_harness_changes: true\n"))).pass, true);
   // A test file replaced by a symlink.
   const ln = taskTree(base, { "src/a.txt": "a\n", "src/empty.js": "" });
   sh(ln.wt, "rm tests/a.test.js && ln -s ../src/empty.js tests/a.test.js");
   git(ln.wt, "add -A && git -c user.name=t -c user.email=t@t commit -qm ln");
-  assert.match(run(ln, briefOf("true")).line, /^FAIL (symlink-harness|tests-removed):tests\/a\.test\.js/);
+  assert.match((await run(ln, briefOf("true"))).line, /^FAIL (symlink-harness|tests-removed):tests\/a\.test\.js/);
   // HEAD moved off the task branch / history rewritten.
   const hd = taskTree(base, { "src/a.txt": "a\n" });
   git(hd.wt, "checkout -q -b elsewhere");
-  assert.match(run(hd, briefOf("true")).line, /^FAIL integrity:head/);
+  assert.match((await run(hd, briefOf("true"))).line, /^FAIL integrity:head/);
   const hist = taskTree(base, { "src/a.txt": "a\n" });
   git(hist.wt, "checkout -q --orphan tmp && git -c user.name=t -c user.email=t@t commit -qm orphan && git branch -f nova/t-1 HEAD && git checkout -q nova/t-1");
-  const h = run(hist, briefOf("true"));
+  const h = await run(hist, briefOf("true"));
   assert.match(h.line, /^FAIL integrity:history/);
   assert.equal(h.fatal, true);
 });
 
-test("acceptance: .git/info changes are integrity failures too", () => {
+test("acceptance: .git/info changes are integrity failures too", async () => {
   const tt = taskTree({}, { "src/a.txt": "a\n" });
   mkdirSync(join(tt.repo, ".git", "info"), { recursive: true });
   writeFileSync(join(tt.repo, ".git", "info", "attributes"), "* filter=evil\n");
-  const r = run(tt, briefOf("true"));
+  const r = await run(tt, briefOf("true"));
   assert.match(r.line, /^FAIL integrity:\.git\/info/);
   assert.equal(r.fatal, true);
 });
