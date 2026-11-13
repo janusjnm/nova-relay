@@ -84,6 +84,11 @@ test("restore: needs --dest, never the live home or a non-empty dir; restored ta
   assert.throws(() => restore(cfg, { from: snap }), /needs --dest/);
   assert.throws(() => restore(cfg, { from: snap, dest: cfg.home }), /live nova-relay home/);
   assert.throws(() => restore(cfg, { from: snap, dest: join(cfg.home, "drill") }), /live nova-relay home/);
+  // A not-yet-existing --dest under a symlink into the live home: refused, nothing created there.
+  symlinkSync(cfg.home, join(root, "home-link"));
+  assert.throws(() => restore(cfg, { from: snap, dest: join(root, "home-link", "drill", "x") }), /live nova-relay home/);
+  assert.ok(!existsSync(join(cfg.home, "drill")));
+  assert.throws(() => snapshot(cfg, { out: join(root, "home-link", "snapdir") }), /inside the nova-relay home/);
   const busy = join(root, "busy");
   mkdirSync(busy);
   writeFileSync(join(busy, "x"), "");
