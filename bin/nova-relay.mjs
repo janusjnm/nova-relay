@@ -55,7 +55,7 @@ async function onTaskHost(ctx, id, method, payload) {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { pos, flags } = parseArgs(rest);
-  if (!cmd || cmd === "help" || flags.help) return out(USAGE);
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h" || flags.help) return out(USAGE);
   if (cmd === "version" || cmd === "--version") return out(VERSION);
   if (cmd === "brief-template") return out(BRIEF_TEMPLATE);
 
@@ -123,6 +123,7 @@ async function main() {
     case "accept": {
       const id = need(pos[0], "task id");
       const t = ctx.store.get(id);
+      if (!t?.worktree) { console.error(`${id}: no worktree (text task or not started); see result.md`); return process.exit(2); }
       const r = accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project: cfg.projects[t.project] });
       out(r.line);
       return process.exit(r.pass ? 0 : 1);
