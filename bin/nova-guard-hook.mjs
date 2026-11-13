@@ -17,7 +17,9 @@ const policy = JSON.parse(env.NOVA_GUARD_POLICY || "{}");
 const base = { taskDir: env.NOVA_TASK_DIR, policy, workdir: env.NOVA_WORKDIR, forbidden: JSON.parse(env.NOVA_FORBIDDEN || "[]") };
 
 let d = { allow: true };
-if (tool === "Bash" && typeof input.command === "string") d = guardDecision({ ...base, kind: "bash", subject: input.command });
+// ev.cwd = the Bash tool's current directory (it persists across calls), so relative targets and
+// scripts are resolved where the shell really is.
+if (tool === "Bash" && typeof input.command === "string") d = guardDecision({ ...base, kind: "bash", subject: input.command, cwd: ev.cwd });
 else if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool)) {
   const p = input.file_path || input.notebook_path;
   d = p ? guardDecision({ ...base, kind: "write", subject: p }) : { allow: false, reason: "nova-guard: write tool call without a path; blocked" };

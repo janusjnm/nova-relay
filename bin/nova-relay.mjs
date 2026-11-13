@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // nova-relay — planner/executor relay CLI. Node >= 22, no dependencies. See docs/cli.md.
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { ConfigError, configPath, loadConfig, loadSecrets, projectPaths, readSecretEnvFile } from "../lib/config.mjs";
 import { HANDLERS, dispatch, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
 import { call } from "../lib/rpc.mjs";
@@ -130,7 +130,8 @@ async function main() {
       const project = cfg.projects[t.project];
       const projectEnv = project.env_file ? readSecretEnvFile(project.env_file) : {};
       const r = accept({ workdir: t.worktree, base: t.base_commit, brief: parseBrief(ctx.store.brief(id)), project,
-        env: acceptanceEnv(ctx, projectEnv), repo: projectPaths(cfg, t.project).repo, integrity: t.integrity });
+        env: acceptanceEnv(ctx, projectEnv, project), repo: projectPaths(cfg, t.project).repo, integrity: t.integrity,
+        branch: t.branch || `nova/${id}`, scratch: join(projectPaths(cfg, t.project).worktrees, `.accept-${id}`) });
       out(r.line);
       return process.exit(r.pass ? 0 : 1);
     }

@@ -33,7 +33,7 @@ export function testConfig(root, repo, overrides = {}) {
     limits: { min_free_mb: 1, segment_minutes: 1, idle_timeout_sec: 30, max_local_retries: 2, max_segment_failures: 3, lease_ttl_sec: 30 },
     executors: {
       claude: { adapter: "claude", host: "box", bin: FAKE, credential_files: [FAKE] },
-      "deepseek-text": { adapter: "deepseek-text", host: "box" },
+      "deepseek-text": { adapter: "deepseek-text", host: "box", model: "test-model" },
     },
     routing: { rules: [{ type: "code", executor: "claude" }, { type: "text", executor: "deepseek-text" }], default: "claude" },
     projects: { PD: { repo, base: "main", worktrees: join(root, "wt"), webhook: { url_env: "PD_URL", key_env: "PD_KEY" } } },

@@ -49,7 +49,8 @@ echo "  ok $BIN_DIR/nova-relay -> $PREFIX/current/bin/nova-relay"
 
 if [ ! -e "$CONF_DIR/config.json" ]; then
   install -m 600 "$SRC/config/nova-relay.example.json" "$CONF_DIR/config.json"
-  echo "  ok created $CONF_DIR/config.json from the example — edit it (self, hosts, projects)"
+  echo "  ok created $CONF_DIR/config.json from the example — edit it (self, hosts, projects, and the"
+  echo "     pi / deepseek-text \"model\" placeholders: there is no default model id)"
 else
   echo "  ok kept existing $CONF_DIR/config.json"
 fi

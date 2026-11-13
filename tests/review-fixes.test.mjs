@@ -125,7 +125,7 @@ test("quota on a running task → rerouted at the segment boundary to a same-hos
 test("fallbackFor: pinned briefs, kind mismatch, project allowlist, host mode, reroute cap", () => {
   const cfg = normalizeConfig({
     self: "box", coordinator: "box", hosts: { box: { role: "box" }, vps: { role: "vps", ssh: "vps" } },
-    executors: { claude: { adapter: "claude", host: "box" }, codex: { adapter: "codex", host: "vps" }, ds: { adapter: "deepseek-text", host: "vps" } },
+    executors: { claude: { adapter: "claude", host: "box" }, codex: { adapter: "codex", host: "vps" }, ds: { adapter: "deepseek-text", host: "vps", model: "test-model" } },
     routing: { rules: [{ type: "code", executor: "claude", fallback: ["ds", "codex"] }], reroute_paused: "any" },
     projects: { PD: { repo: "/srv/pd" }, NM: { repo: "/srv/nm", executors: ["claude"] } },
   }, {});
@@ -190,7 +190,7 @@ test("project env_file readable by others → task blocked; 0600 → injected an
 test("doctor --live: subscription login check via `claude auth status`; DeepSeek key via /user/balance (opt-in)", async () => {
   const { root, repo } = tempRepo();
   const calls = [];
-  const fetchImpl = async (url) => { calls.push(url); return { ok: true, status: 200, text: async () => JSON.stringify({ is_available: true }) }; };
+  const fetchImpl = async (url) => { calls.push(url); return { ok: true, status: 200, text: async () => JSON.stringify(url.endsWith("/models") ? { data: [{ id: "test-model" }] } : { is_available: true }) }; };
   const ctx = testContext(testConfig(root, repo), { FAKE_MODE: "ok", DEEPSEEK_API_KEY: "sk-test-1234567890" }, { fetchImpl });
   const by = async (opts) => Object.fromEntries((await doctor(ctx, { remote: false, ...opts })).map((r) => [r.name, r]));
   const off = await by({});

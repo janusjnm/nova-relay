@@ -212,7 +212,7 @@ test("secrets in executor output are redacted in progress and logs; child env ha
 test("adapter contracts: required flags present in built commands; cliContract detects old versions", () => {
   for (const [name, a] of Object.entries(ADAPTERS)) {
     if (a.kind !== "agent") continue;
-    const built = a.buildCommand({ ex: {}, prompt: "P", workdir: "/w", taskDir: "/t", segment: 1, session: "s", resume: false, hookCmd: "h" });
+    const built = a.buildCommand({ ex: { model: "m-1" }, prompt: "P", workdir: "/w", taskDir: "/t", segment: 1, session: "s", resume: false, hookCmd: "h" });
     assert.ok(built.args.includes("P") || built.args.some((x) => x === "P"), `${name} passes the prompt`);
     for (const f of a.requiredFlags.filter((f) => !["--resume", "--help", "--no-session", "--session-id"].includes(f))) {
       if (name === "claude" || name === "codex") assert.ok(built.args.includes(f), `${name} uses ${f}`);

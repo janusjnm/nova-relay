@@ -11,8 +11,8 @@ const base = () => ({
   executors: {
     claude: { adapter: "claude", host: "box" },
     codex: { adapter: "codex", host: "vps" },
-    pi: { adapter: "pi", host: "vps" },
-    "deepseek-text": { adapter: "deepseek-text", host: "vps" },
+    pi: { adapter: "pi", host: "vps", model: "test-model" },
+    "deepseek-text": { adapter: "deepseek-text", host: "vps", model: "test-model" },
   },
   routing: { rules: [
     { type: "long-code", executor: "claude", fallback: ["codex"] },

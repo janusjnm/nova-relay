@@ -26,7 +26,7 @@ test("adapter contracts against the real --help: every required and every emitte
   for (const [name, file] of Object.entries(HELP)) {
     const a = ADAPTERS[name], help = fixture(file);
     assert.deepEqual(missingFlags(help, a.requiredFlags), [], `${name} required flags`);
-    const built = a.buildCommand({ ex: {}, prompt: "P", workdir: "/w", taskDir: "/t", segment: 1, session: "s", resume: false, hookCmd: "h" });
+    const built = a.buildCommand({ ex: { model: "m-1" }, prompt: "P", workdir: "/w", taskDir: "/t", segment: 1, session: "s", resume: false, hookCmd: "h" });
     const used = built.args.filter((x) => /^--[a-z]/.test(x)).map((x) => x.split("=")[0]);
     assert.deepEqual(missingFlags(help, used), [], `${name} emitted flags`);
     for (const f of a.requiredFlags.filter((f) => !["--resume", "--session-id"].includes(f))) assert.ok(built.args.includes(f), `${name} uses ${f}`);
@@ -84,11 +84,11 @@ test("codex: a successful run without any parseable event is blocked (audit woul
 });
 
 test("pi: guard isolation flags always present; extra extensions / --approve refused by config", () => {
-  const b = ADAPTERS.pi.buildCommand({ ex: {}, prompt: "P" });
+  const b = ADAPTERS.pi.buildCommand({ ex: { model: "m-1" }, prompt: "P" });
   for (const f of ["--no-extensions", "--no-approve", "--no-mcp", "--extension"]) assert.ok(b.args.includes(f), f);
-  assert.equal(b.args[b.args.indexOf("--model") + 1], "deepseek-flash", "a model id from pi's built-in catalog");
+  assert.equal(b.args[b.args.indexOf("--model") + 1], "m-1", "exactly the configured id");
   for (const bad of [["-e", "x.ts"], ["--approve"], ["--extension", "y.ts"]]) {
-    assert.throws(() => normalizeConfig({ self: "box", hosts: { box: {} }, executors: { pi: { adapter: "pi", args: bad } } }, {}), /bypass nova-guard/);
+    assert.throws(() => normalizeConfig({ self: "box", hosts: { box: {} }, executors: { pi: { adapter: "pi", model: "m-1", args: bad } } }, {}), /bypass nova-guard/);
   }
 });
 
@@ -104,9 +104,9 @@ test("Pi extension: unknown tools are blocked (fail closed), read-only tools pas
 
 test("doctor --live DeepSeek: model id checked against /models", async () => {
   const { deepseekKeyCheck } = await import("../lib/executors/deepseek-check.mjs");
-  const fetchImpl = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith("/models") ? { data: [{ id: "deepseek-flash" }] } : { is_available: true }) });
-  assert.equal((await deepseekKeyCheck({ key: "k", model: "deepseek-flash", fetchImpl })).ok, true);
-  const bad = await deepseekKeyCheck({ key: "k", model: "deepseek-chat", fetchImpl });
+  const fetchImpl = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith("/models") ? { data: [{ id: "model-a" }] } : { is_available: true }) });
+  assert.equal((await deepseekKeyCheck({ key: "k", model: "model-a", fetchImpl })).ok, true);
+  const bad = await deepseekKeyCheck({ key: "k", model: "model-b", fetchImpl });
   assert.equal(bad.ok, false);
   assert.match(bad.detail, /not offered/);
 });
