@@ -58,4 +58,5 @@ webhook payload 只有：
 
 - 唤醒只在批次结束、需要审批/登录、被阻塞、分段失败超过 3 次或 box 失联时发生；同一事件有去重键，只入队一次。
 - `ack` 之后 `pending` 不再列出该批次，所以重复或迟到的 webhook 会落在第 1 步的"为空 → 安静结束"。
-- 如果 webhook 完全丢失：outbox 会持续重试；Grok 下一次对话开始时运行 `nova-relay pending --owner <OWNER>` 也能补上。
+- 如果 webhook 完全丢失：outbox 会按退避重试约 3.5 小时（12 次），之后成为死信（`doctor` 会报告，`nova-relay outbox --flush` 重发）；Grok 下一次对话开始时运行 `nova-relay pending --owner <OWNER>` 也能补上。
+- `ack` 只用于已结束（PASS/FAIL）的批次；对还有未结束任务的批次，`ack` 会被拒绝。

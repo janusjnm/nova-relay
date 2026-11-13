@@ -42,21 +42,23 @@
 
 `budget`（按 UTC 日）：`segments_per_day`、`minutes_per_day`、`tokens_per_day`、`cost_usd_per_day`。超出 → 执行者暂停到下一个 UTC 零点。
 
+`limits`、`executors.<name>.limits`、`budget` 里**未知的键**（拼写错误，如 `segment_minuts`）与 `projects.<P>.executors` 里不存在的执行者都会让配置校验失败，而不是悄悄回落到默认值。
+
 | adapter | 额外字段 | 固定行为 |
 |---|---|---|
 | `claude` | `permission_mode`（默认 `acceptEdits`，禁止 `bypassPermissions`）、`setting_sources`（默认 `user`）、`allowed_tools`、`disallowed_tools`（默认禁 WebFetch/WebSearch）、`allow_web`、`fresh_session_every`（默认 4）、`min_version`（默认 `2.0.0`） | `claude --print <prompt> --output-format stream-json --verbose --permission-mode … --settings <PreToolUse hook> --setting-sources user --strict-mcp-config --allowedTools … --disallowedTools … --session-id <uuid>`（续段用 `--resume <uuid>`）；剔除 `ANTHROPIC_*`/`CLAUDE_CODE_USE_*`/`CLAUDE_CODE_OAUTH_TOKEN`；禁止 `--bare`、`--dangerously-skip-permissions` |
-| `codex` | `sandbox`（默认 `workspace-write`；`danger-full-access` 被拒绝） | `codex exec --json --sandbox … --cd <worktree> --skip-git-repo-check --output-last-message <file> [--model …] <prompt>`；剔除 `OPENAI_API_KEY/BASE_URL`、`CODEX_API_KEY`；禁止 `--dangerously-bypass-approvals-and-sandbox`/`--yolo`/开启网络的覆盖；每段新会话 + 进度摘要；`--json` 事件用于事后审计 |
-| `pi` | `provider`（默认 `deepseek`）、`model`（默认 `deepseek-chat`，**未经实机验证**，请用 `pi --list-models` 或 pi 文档确认）、`key_env`（`DEEPSEEK_API_KEY`；若改名，会以 `DEEPSEEK_API_KEY` 的名字传给 pi）、`tools`、`thinking` | `pi --print <prompt> --provider … --model … --tools … --no-session --extension extensions/nova-guard.ts`；禁止 `--no-extensions` |
-| `deepseek-text` | `endpoint`（必须 https）、`model`、`key_env`、`max_tokens`、`timeout_sec` | 单次 chat-completions 调用，无 shell、无文件访问 |
+| `codex` | `sandbox`（`workspace-write` 默认或 `read-only`；其他值被拒绝） | `codex exec --json --sandbox … --cd <worktree> --skip-git-repo-check --ignore-user-config --ignore-rules --output-last-message <file> [--model …] <prompt>`：不读 `~/.codex/config.toml`（其中的 MCP 服务器可能发消息、配置可能放宽沙箱；登录仍用 `CODEX_HOME` 里的凭据，所以 `model` 等请写在本配置里）、不读 execpolicy `.rules`、不加 `--trust`（仓库里的 `.codex/` 配置不生效）；剔除 `OPENAI_API_KEY/BASE_URL`、`CODEX_API_KEY`；禁止 `--dangerously-*`/`--yolo`/`--trust`/`--add-dir`/开启网络的覆盖；每段新会话 + 进度摘要；`--json` 事件用于事后审计 |
+| `pi` | `provider`（默认 `deepseek`）、`model`（默认 `deepseek-flash`，pi 1.5.2 内置目录里 deepseek 的模型是 `deepseek-flash` 与 `deepseek-v4-pro`；用 `DEEPSEEK_API_KEY=… pi --list-models deepseek` 查看你的版本）、`key_env`（`DEEPSEEK_API_KEY`；若改名，会以 `DEEPSEEK_API_KEY` 的名字传给 pi）、`tools`、`thinking` | `pi --print <prompt> --provider … --model … --tools … --no-session --no-extensions --no-approve --no-mcp --extension extensions/nova-guard.ts`：只加载 nova-guard（全局/自动发现的扩展可能在守卫放行后改写工具参数）、不加载仓库 `.pi/` 下需信任的资源、无 MCP 工具；`args` 里出现 `-e/--extension`、`-a/--approve` 会校验失败 |
+| `deepseek-text` | `endpoint`（必须 https）、`model`（默认 `deepseek-flash`）、`key_env`、`max_tokens`、`timeout_sec` | 单次 chat-completions 调用，无 shell、无文件访问 |
 
 ### 参数核验情况
 
 | 执行者 | 核验方式 | 结论 |
 |---|---|---|
 | claude | 本机 Claude Code 2.1.308 的 `claude --help`，并实跑一次：构造出的完整参数被接受、PreToolUse hook 经 `--settings` 生效并拦下 `git push origin main`、`--session-id` 后 `--resume` 同一会话成功、`claude auth status --json` 返回 `authMethod: "claude.ai"` | ✅ 已验证 |
-| codex | 官方 CLI 参考（`codex exec` 的 `--cd/-C`、`--sandbox/-s`、`--skip-git-repo-check`、`--output-last-message/-o`、`--json`、`--model/-m`；`codex login status` 有凭据时退出码 0） | 🟡 文档核验，本机未安装；`--json` 事件字段（`item.completed` + `command_execution`/`file_change`）按文档/源码习惯解析，未实机验证 |
-| pi | 官方 CLI 参考 pi.dev/docs/latest/cli.md（`--print`、`--provider`、`--model`、`--tools`、`--no-session`、`--extension`）与扩展文档（`tool_call` 事件 `{toolName,input}`，返回 `{block,reason}`；内置 deepseek 读 `DEEPSEEK_API_KEY`） | 🟡 文档核验，本机未安装 |
-| deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`（`doctor --live`） | 🟡 文档核验 |
+| codex | 在临时目录安装 codex-cli 0.169.0（未登录、无 key）：用到的每个参数都在真实的 `codex exec --help` 里（快照见 `tests/fixtures/cli/`，契约测试对照它）；未登录时实跑一次，`--json` 输出 `thread.started`/`turn.started`/`error`/`item.completed`/`turn.failed`，与 `@openai/codex-sdk` 的 `ThreadEvent` 类型一致（`item.*` 的 `command_execution.command` 为字符串、`file_change.changes[].path`、`mcp_tool_call`）；同一 item 会先后出现在 `item.started` 与 `item.completed`，审计按 id 去重；`Reconnecting… n/5` 的 `error` 事件是重试中的临时错误，不参与失败分类；`codex login status` 未登录时输出 `Not logged in`、退出码 1 | ✅ 参数与事件信封已实机核验；登录后真实执行命令的事件 🟡 |
+| pi | 在临时目录安装 pi 1.5.2（`@earendil-works/pi-coding-agent`），用本地模拟的 DeepSeek 接口（`~/.pi/agent/models.json` 覆盖 `baseUrl`）端到端实跑适配器构造的完整命令：扩展被加载并写出 `guard-loaded`，模型发起的 `git push origin main` 被拦下并生成审批，普通命令照常执行；去掉 `--no-extensions --no-approve` 时，全局与仓库 `.pi/extensions` 下的扩展都会被加载（能改写已放行的命令），加上后都不加载；无效 key 时输出 `401: {…authentication_error…}`（归类为 auth） | ✅ 已实机验证（用真实 DeepSeek key 的实跑 🟡） |
+| deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验（模型名以 `doctor --live` 为准） |
 
 无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查（按版本缓存 1 小时），不满足则任务 `blocked` 并唤醒。
 

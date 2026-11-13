@@ -12,11 +12,11 @@
 |---|---|
 | disaster | `rm -r` 目标为 `/`、`~`、`$HOME`、`/home`、`/etc`、`/workspace`、`..`、`*`、`.` 等；`find / -delete`；`mkfs*`；`dd of=/dev/*`；`git filter-branch` |
 | push | **任何** `git push`（force / 删除 / `+refspec` / 保护分支会特别标注）——执行者从不推送，合并由 owner 完成 |
-| remote | `git remote add/set-url`、`git config --global`、`git config` / `git -c` 设置 `alias.*`、`core.hooksPath`、`core.sshCommand`、`remote.*`、`url.*`、`credential.*`、`include*` 等、`gh` 写操作、`npm/cargo/twine publish` |
+| remote | `git remote add/set-url`、`git config --global`、`git config` / `git -c` / `git --config-env` 设置 `alias.*`、`core.hooksPath`、`core.sshCommand`、`remote.*`、`url.*`、`credential.*`、`include*` 等、`gh` 写操作、`npm/cargo/twine publish` |
 | egress | `ssh/scp/nc/telnet/mail`、`rsync host:`、`curl/wget` 上传或 POST、访问不在 `guard.allow_hosts` 的主机、`git send-email/daemon/svn/p4` |
 | system | `crontab`、`systemctl`、`tailscale`、`reboot/shutdown`、防火墙、对 `/` 或 `~` 的递归 chmod/chown |
 | secrets | `env`/`printenv`/`export -p` 全量输出、读取 `~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.ssh/`、`.netrc` 等 |
-| path | 写 worktree 以外（`/tmp` 除外）或写入 `forbidden_paths`：Edit/Write 工具、shell 重定向（`>`、`>>`、`&>`）、`cp/mv/install/ln/tee/touch/mkdir/rm/chmod/sed -i/perl -i/dd of=` 的目标。目标里有无法解析的变量或命令替换（`> $OUT`）**默认拒绝**；`~`、`$HOME`、`$PWD`、`$TMPDIR` 会被展开。路径先解析符号链接（对尚不存在的路径取最深的已存在祖先的 realpath），所以 worktree 里放一个指向别的项目的链接也写不出去 |
+| path | 写 worktree 以外（`/tmp` 除外）或写入 `forbidden_paths`：Edit/Write 工具、shell 重定向（`>`、`>>`、`&>`）、`cp/mv/install/ln/tee/touch/mkdir/rm/chmod/sed -i/perl -i/dd of=` 的目标。目标里有无法解析的变量或命令替换（`> $OUT`）**默认拒绝**；`~`、`$HOME`、`$PWD`、`$TMPDIR` 会被展开。同一条命令里前面的 `cd X` / `pushd X` 会改变相对路径的落点（`cd .. && rm -rf other` 会被拦下），`cd` 到无法解析的目录（`cd $X`、`cd -`）之后的相对写目标默认拒绝。路径先解析符号链接（对尚不存在的路径取最深的已存在祖先的 realpath），所以 worktree 里放一个指向别的项目的链接也写不出去 |
 | script | 执行者**可能自己写的**脚本（位于 worktree 或 `/tmp`）会被读出来检查：`bash x.sh`、`sh -x x.sh`、`./x`（按 shebang 判断）、`source`/`.`、`npm/pnpm/yarn/bun run <name>`（含 pre/post）、`make <target>`（Makefile 配方行）逐行按 shell 规则检查；`python/node/perl/ruby/php/deno/bun` 脚本及 `-c/-e` 内联代码做启发式扫描（能 shell-out 的代码里像命令的字符串、写 worktree 外或家目录、对外发送（`requests.post`、`smtplib`、`method: 'POST'`、socket）、base64 解码后执行）。读不到的执行者脚本**默认拒绝** |
 
 复合命令（`;`、`&&`、`|`，双引号内不拆）、`$(...)`、反引号、`bash -c '...'` / `bash -lc '...'`（含 `-ec`、`-xc` 等组合短参数）都会拆开逐段检查；`2>&1` 这类重定向不会被误拆。
@@ -25,8 +25,8 @@
 
 - **Claude Code**：通过 `--settings` 注入 PreToolUse hook（`bin/nova-guard-hook.mjs`），覆盖 Bash/Edit/Write/MultiEdit/NotebookEdit；hook 以退出码 2 拒绝并把原因返回给 Claude（已在 Claude Code 2.1.308 上实测：`git push origin main` 被拦下并生成审批请求）。hook 输入无法解析、或写工具没有路径时**拒绝**。默认禁用 WebFetch/WebSearch；`--setting-sources user --strict-mcp-config` 让仓库内的 `.claude/settings*.json` 与 `.mcp.json` 不生效。
   - **存活检查**：`claude -p` 对校验失败的 `--settings` 是静默忽略的（`claude --help` 原文），也就是守卫可能悄悄失效。hook 每次被调用都在任务目录的 `hook-calls` 记一笔；分段结束时，若 stream-json 里有受控工具调用而 hook 一次都没被调用，任务直接 `blocked` 并唤醒，不会继续、也不会判 done。
-- **Pi**：始终以 `--extension` 加载 `extensions/nova-guard.ts`，没有关闭开关（配置里出现 `--no-extensions` 会校验失败）。扩展加载时写 `guard-loaded` 标记，分段成功结束却没有标记 → `blocked`。
-- **Codex**：没有逐命令 hook。约束来自三层：① `codex exec --sandbox workspace-write`（只能写工作目录、默认无网络），禁止沙箱绕过参数与开启网络的覆盖；② **事后审计**：以 `--json` 运行，事件流里每一条执行过的命令与文件改动都过一遍同一个守卫，命中即生成 `audit` 审批请求（主题以 `ran:` / `wrote:` 开头），任务进入 `needs_approval`——用户 approve 则继续，deny 则任务 `failed`（操作已经发生，deny 表示拒收这份工作）；③ 所有执行者共同的验收阶段检查（见下）。注意：审计是**事后**的，它能发现并上报，不能阻止；事件格式依赖 Codex 版本，必须实测（failure-modes.md「必须实测」第 7 项）。
+- **Pi**：始终以 `--extension` 加载 `extensions/nova-guard.ts`，没有关闭开关；同时固定加 `--no-extensions`（不加载全局/自动发现的扩展——pi 按加载顺序调用扩展，后加载的扩展可以在守卫放行后改写 `event.input`）、`--no-approve`（不加载仓库 `.pi/extensions`、`.pi/settings.json`、`.pi/mcp.json` 等需信任的资源）、`--no-mcp`（`--tools` 白名单不会去掉 MCP 工具）。守卫对 bash/edit/write 做检查，read/grep/find/ls 放行，**其他任何工具一律拦截**。配置 `args` 里出现 `-e/--extension`、`-a/--approve` 会校验失败。扩展加载时写 `guard-loaded` 标记，分段成功结束却没有标记 → `blocked`。以上已用 pi 1.5.2 实机验证（见 config.md「参数核验情况」）。
+- **Codex**：没有逐命令 hook。约束来自三层：① `codex exec --sandbox workspace-write`（只能写工作目录、默认无网络），禁止沙箱绕过/信任参数与开启网络的覆盖；`--ignore-user-config --ignore-rules` 让 `~/.codex/config.toml`（MCP 服务器、沙箱设置）与 execpolicy 规则不生效，不加 `--trust` 所以仓库内 `.codex/` 配置不生效；② **事后审计**：以 `--json` 运行，事件流里每一条执行过的命令与文件改动都过一遍同一个守卫，每一次 MCP 工具调用都直接算命中，命中即生成 `audit` 审批请求（主题以 `ran:` / `wrote:` / `mcp:` 开头），任务进入 `needs_approval`——用户 approve 则继续，deny 则任务 `failed`（操作已经发生，deny 表示拒收这份工作）；分段成功结束却**一条可解析的事件都没有**（事件格式变了，审计等于失明）→ `blocked`；③ 所有执行者共同的验收阶段检查（见下）。注意：审计是**事后**的，它能发现并上报，不能阻止。事件信封已对照 codex-cli 0.169.0 实机输出与 `@openai/codex-sdk` 类型核验；登录后执行命令的事件仍需实测（failure-modes.md「必须实测」第 7 项）。
 
 ### 验收阶段的独立检查（对所有执行者）
 
@@ -66,6 +66,6 @@ Grok 把命令原样给用户看 → 用户决定
 
 ## 已知局限
 
-- guard 是基于词法与启发式的规则，**不是沙箱**。脚本扫描能挡住常见写法（脚本里的 `git push`、写 `/etc`、`requests.post`、base64+exec），挡不住刻意混淆的代码（字符串拼接出命令、编译型程序、通过测试框架间接执行的代码等）。以下也不扫描：`node_modules/`、`.venv/`、`venv/`、`vendor/` 下的文件（视为包管理器安装的内容），worktree 与 `/tmp` 以外的脚本（执行者写不到那里）；`cd` 到别处后的相对路径按 worktree 解析。
+- guard 是基于词法与启发式的规则，**不是沙箱**。脚本扫描能挡住常见写法（脚本里的 `git push`、写 `/etc`、`requests.post`、base64+exec），挡不住刻意混淆的代码（字符串拼接出命令、编译型程序、通过测试框架间接执行的代码等）。以下也不扫描：`node_modules/`、`.venv/`、`venv/`、`vendor/` 下的文件（视为包管理器安装的内容），worktree 与 `/tmp` 以外的脚本（执行者写不到那里）。`cd` 只在同一条命令行内跟踪（子 shell 的括号不建模，`(cd ..; …)` 之后的命令仍按 `..` 解析，偏保守），`git -C`、`make -C`、`--prefix` 之类的"换目录"参数不跟踪。
 - 验收命令（测试）本身会执行执行者写的代码，并且有网络——这是验收的本质。真正的边界还包括：worktree 隔离、子进程环境剔除密钥、验收阶段的 integrity/路径/测试检查、以及"不 push"的流程。高风险项目请在容器或独立用户下运行执行者与验收。
 - Codex 的前置约束依赖其自身沙箱实现；nova-relay 的审计是事后的。

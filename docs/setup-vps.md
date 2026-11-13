@@ -11,7 +11,7 @@ VPS 常开，承担：批次视图与 webhook 发送（coordinator）、运行 `
   npm i -g @openai/codex
   codex login            # 选择 ChatGPT 账号登录；不要设置 OPENAI_API_KEY / OPENAI_BASE_URL
   ```
-- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`（原 `@mariozechner/pi-coding-agent` 已弃用），`pi --version`。配置里的 `model`（默认 `deepseek-chat`）未在实机验证，请确认你的 pi 版本里有这个模型名。
+- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`（原 `@mariozechner/pi-coding-agent` 已弃用），`pi --version`。配置里的 `model` 默认 `deepseek-flash`（pi 1.5.2 内置目录中的 DeepSeek 模型：`deepseek-flash`、`deepseek-v4-pro`）；`DEEPSEEK_API_KEY=… pi --list-models deepseek` 可查看你的版本，`nova-relay doctor --live` 会向 DeepSeek `GET /models` 确认该名称可用。
 - DeepSeek API key（pi 与 deepseek-text 共用，变量名可配置，默认 `DEEPSEEK_API_KEY`）。
 
 ## 2. 安装
