@@ -10,6 +10,7 @@
 - box（你所在、可能睡眠的机器）与 VPS / mm01（常开）的 Tailscale 名称，两边能否互相 `ssh`（密钥登录）。
 - 项目列表（如 PD、NM）：每个项目在 box 与 VPS 上的仓库路径、基准分支、owner 名。
 - 要启用哪些执行者（claude / codex / pi / deepseek-text）。
+- 运行中的任务碰到额度/预算时是否改路由（`routing.reroute_paused`：`off` 默认 / `same-host` / `any`，见 `docs/config.md`）。
 
 完成标准：拿到上述信息（不含任何密钥）。
 
@@ -31,7 +32,7 @@ VPS 上由用户（或你经 ssh，经用户同意）执行同样步骤，参数
 - VPS：用户运行 `codex login`（ChatGPT 账号）；安装 `pi`。
 - DeepSeek key、webhook URL/key：用户自己写入 VPS 的 `~/.config/nova-relay/secrets.env`（0600）。
 
-你只验证，不接触值：`nova-relay doctor` 中 `executor * auth` 为 OK。
+你只验证，不接触值：`nova-relay doctor` 中 `executor * auth` 为 OK。经用户同意后可再跑 `nova-relay doctor --live`（真实检查：claude 必须是 claude.ai 订阅登录、codex 不能是 API key 登录、DeepSeek key 有效；不调用模型），`executor * live` 应为 OK。
 
 ## 步骤 4：配置
 

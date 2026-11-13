@@ -9,6 +9,7 @@ description: 配置、自检、修复 nova-relay（box + VPS）。触发词：�
 
 ```bash
 nova-relay doctor
+nova-relay doctor --live   # 用户同意后再跑：实查登录方式与 DeepSeek key（联网，不消耗模型额度）
 ```
 
 逐条处理 FAIL / WARN（含义见 `docs/failure-modes.md`）：
@@ -16,12 +17,13 @@ nova-relay doctor
 | 项 | 处理 |
 |---|---|
 | `executor claude cli` | box 上安装/升级官方 Claude Code；参数缺失说明 CLI 变了 → 告诉用户，需要更新 nova-relay 适配器 |
+| `executor * live` | `claude` 不是 `claude.ai` 订阅登录 / `codex` 是 API key 登录 / DeepSeek key 被拒 → 同下，请用户亲自处理 |
 | `executor * auth` | 请用户亲自登录（`claude` → `/login`；VPS 上 `codex login`；DeepSeek key 写入 VPS 的 `~/.config/nova-relay/secrets.env`），然后 `nova-relay unpause <executor>` |
 | `webhook *` | 请用户把 Grok Routine 的 URL/Bearer key 写入 coordinator 的 secrets.env（0600），变量名见配置 `webhook.url_env/key_env`。**绝不**让用户在聊天里发送这些值 |
 | `secrets file` | `chmod 600 ~/.config/nova-relay/secrets.env` |
 | `host *` 不可达 | 检查 Tailscale（`tailscale status`）与 ssh 密钥；在此期间心跳兜底会生效 |
 | `leases` | `nova-relay resume --all` |
-| `outbox` 死信 | 修好 webhook 后 `nova-relay outbox --flush` |
+| `outbox` 死信 | 修好 webhook 后 `nova-relay outbox --flush`（会把死信恢复为待发并重发） |
 | `disk` | 清理磁盘；`nova-relay gc` 只会删 ack 过的任务 |
 
 ## 边界

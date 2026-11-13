@@ -11,7 +11,7 @@ VPS 常开，承担：批次视图与 webhook 发送（coordinator）、运行 `
   npm i -g @openai/codex
   codex login            # 选择 ChatGPT 账号登录；不要设置 OPENAI_API_KEY / OPENAI_BASE_URL
   ```
-- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`，`pi --version`。
+- Pi coding agent：`npm i -g @earendil-works/pi-coding-agent`（原 `@mariozechner/pi-coding-agent` 已弃用），`pi --version`。配置里的 `model`（默认 `deepseek-chat`）未在实机验证，请确认你的 pi 版本里有这个模型名。
 - DeepSeek API key（pi 与 deepseek-text 共用，变量名可配置，默认 `DEEPSEEK_API_KEY`）。
 
 ## 2. 安装
@@ -23,6 +23,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now nova-relay-watchdog.timer
 loginctl enable-linger "$USER"
 ```
+
+`install.sh` 会记录当前 `node` 的绝对路径（`bin/.node-path`），所以经 ssh 或 systemd（PATH 很短）调用 `nova-relay` 时也能找到用 nvm 等方式安装的 Node；同目录下 `npm -g` 安装的 `codex`/`pi` 也会加入 PATH。若执行者 CLI 在别处，请在配置里写 `bin` 的绝对路径。
 
 没有 systemd 时用 cron（效果相同）：
 
@@ -64,6 +66,7 @@ DEEPSEEK_API_KEY=<key>
 
 ```bash
 nova-relay doctor
+nova-relay doctor --live # 可选：实查 codex 登录方式（必须是 ChatGPT 订阅）与 DeepSeek key
 nova-relay watchdog      # 手动跑一次，看 hosts.box 的结果
 nova-relay outbox        # 有无积压/死信
 ```

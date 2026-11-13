@@ -9,7 +9,7 @@ box = 运行 Grok Bot 的 Linux 机器，空闲时可能睡眠。它负责：Gro
   ```bash
   npm i -g @anthropic-ai/claude-code   # 或官方安装方式
   claude            # 交互式完成 /login（订阅登录），然后退出
-  claude --version
+  claude --version          # 需要 ≥ 2.0.0；已验证 2.1.308
   ```
   不要设置 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，不要使用任何第三方网关，不要使用 `--bare`。nova-relay 在启动 claude 前会主动剔除这些变量，配置里出现会直接校验失败。
 
@@ -48,6 +48,7 @@ box 与 VPS 使用**同一份**配置文件即可（`self` 可用环境变量 `N
 
 ```bash
 nova-relay doctor          # 全部 OK / 合理 WARN
+nova-relay doctor --live   # 可选：实查 claude 是订阅登录（claude auth status 的 authMethod 为 claude.ai）
 ssh mm01 nova-relay rpc ping </dev/null    # box → VPS 通
 ```
 

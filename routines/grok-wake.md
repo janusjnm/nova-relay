@@ -29,19 +29,21 @@ webhook payload 只有：
 2. 对每一行（一个批次）：
    a. 若含 needs_approval：
       - 运行 nova-relay status <TASK_ID>，把每个待审批请求的 req、类别、命令/内容原样发给用户，询问是否放行。
+      - 主题以 "ran:" 或 "wrote:" 开头的是 audit 请求：执行者（Codex）已经执行了这个操作，不是"要不要执行"。如实告诉用户，并建议先检查影响；approve = 接受并继续，deny = 拒收这个任务（任务 failed）。
       - 铁律：你永远不能自行批准。只有用户明确同意后才运行
         nova-relay approve <TASK_ID> <req> --owner <OWNER>
         用户拒绝或要求跳过则运行
         nova-relay deny <TASK_ID> <req> --owner <OWNER>
       - 不要 ack 这个批次，结束本轮。
    b. 若含 needs_auth：告诉用户哪个执行者需要重新登录/更换 key（例如在 box 上运行 claude 完成 /login，或在 VPS 上 codex login / 更新 DEEPSEEK_API_KEY），完成后由用户或你运行 nova-relay unpause <executor>。不要 ack，结束本轮。
-   c. 若含 blocked：运行 nova-relay status <TASK_ID>，把原因（磁盘不足 / CLI 参数变化 / 配置问题）告诉用户。不要 ack。
+   c. 若含 blocked：运行 nova-relay status <TASK_ID>，把原因（磁盘不足 / CLI 参数变化 / 配置问题 / guard inactive = 守卫没有生效 / env 文件权限）告诉用户。不要 ack。
    d. 若为 PASS 或 FAIL（批次已结束）：
       - 运行 nova-relay batch <BATCH_ID> 查看每个任务的 verdict 与分支。
       - 抽查：至少挑一个 done 任务，运行 git -C <repo> diff --stat <base>...nova/<TASK_ID>，并重跑一次它任务书里的验收命令或查看 result.md。执行者写的"摘要"不是证据，verdict 行和你自己的抽查才是。
       - 向用户汇报：批次 ID、PASS/FAIL、每个非 done 任务的原因、抽查证据、各任务分支名。
       - 抽查无误后运行：nova-relay ack <BATCH_ID> --owner <OWNER>
       - 对 failed 任务：不要自动重派。说明原因，询问用户是否调整任务书后重新 dispatch。
+      - 若某任务 verdict 是 FAIL integrity：执行者改动了仓库共享的 .git/config 或 .git/hooks。明确告诉用户：检查这两处之前不要在该仓库运行任何 git 命令；你自己也不要运行。
 
 3. 铁律：
    - 只处理 --owner <OWNER> 的批次。

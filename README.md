@@ -53,7 +53,10 @@ flowchart LR
 - **Segments**: wall-clock cap + idle timeout per segment; after each segment nova-relay commits a checkpoint on the task branch and stores the executor's PROGRESS summary; the next segment receives a progress summary, not the full history.
 - **Local retry**: acceptance FAIL is fed back to the executor up to `max_local_retries` times before escalating.
 - **Isolation**: one git worktree + branch `nova/<id>` per task, no concurrent tasks with overlapping file scopes in a project, separate repo/worktrees/env/webhook/owner per project (e.g. PD vs NM); cross-project paths are refused.
-- **Guard** (`nova-guard`, formerly pi-guard): destructive deletes, any `git push`, remote/config changes, publishing, outbound network/messages, host config, credential reads, writes outside the worktree → blocked into the approval flow. Claude uses a PreToolUse hook, Pi an extension; Codex relies on its `workspace-write` sandbox plus acceptance-time checks.
+- **Guard** (`nova-guard`, formerly pi-guard): destructive deletes, any `git push`, remote/config changes, publishing, outbound network/messages, host config, credential reads, writes outside the worktree → blocked into the approval flow. Commands are split (`bash -lc`, `$(…)`, pipes), write targets outside the worktree are denied (redirections, cp/mv/tee/rm/sed -i, symlinks resolved), and scripts the executor could have written (shell, npm scripts, Makefiles, heuristic scan of python/node/…) are inspected before they run. Claude uses a PreToolUse hook (verified live on Claude Code 2.1.308; a run where tools were used but the hook never fired is blocked, because `claude -p` silently ignores invalid `--settings`), Pi an extension (must report that it loaded). Codex has no pre-hook: its `workspace-write` sandbox, plus an after-the-fact audit of every command in its `--json` event stream (hits become `audit` approvals), plus acceptance-time checks.
+- **Acceptance-time checks for every executor**: shared `.git/config` / `.git/hooks` unchanged (else `FAIL integrity`, not retried), no symlinks escaping the worktree, forbidden paths, scope, test deletion/skips, empty diff, then the brief's commands and the project's checks.
+- **Quota**: a paused executor's queued tasks are rerouted at dispatch; running tasks optionally reroute at the next segment boundary (`routing.reroute_paused`: same host in place, or across hosts with a git bundle of the task branch). Off by default.
+- **Concurrency**: cross-process locks around every state/batch/budget update, one worker per host, journal with sequence numbers replayed after a crash, orphaned executor process groups killed on resume, and a "frozen" worker is only killed after 3×TTL of *observed* non-renewal (so a box waking from sleep is not mistaken for a hung worker).
 - **Recovery**: TTL leases with atomic stealing (two watchdogs can't double-resume); the VPS watchdog asks the box to resume over Tailscale ssh every 5 minutes; if the box is unreachable, a missed box heartbeat triggers one webhook so Grok resumes.
 - **Secrets** only from env vars or `~/.config/nova-relay/secrets.env` (must be 0600), redacted from logs/results, never passed to executor processes.
 
@@ -64,7 +67,7 @@ flowchart LR
 ```bash
 ./install.sh --systemd box        # on the box; on the VPS: --systemd vps
 $EDITOR ~/.config/nova-relay/config.json   # docs/config.md
-nova-relay doctor
+nova-relay doctor              # add --live for real login/key checks (opt-in)
 nova-relay brief-template > /tmp/t1.md
 nova-relay dispatch --project PD /tmp/t1.md
 # … webhook wake …

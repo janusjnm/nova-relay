@@ -52,10 +52,12 @@ stateDiagram-v2
   queued --> running: worker 获取租约(lease)
   running --> running: 分段到时 → checkpoint commit → 下一段
   running --> paused: 额度/限流/预算（到重置时间后自动继续）
+  running --> queued: 额度/预算 + reroute_paused：同主机改用 fallback
+  running --> moved: 额度/预算 + reroute_paused=any：交接到另一台主机
   paused --> queued: resume_after 到期
   running --> needs_approval: guard 拦截 / 合并冲突（唤醒）
   running --> needs_auth: 登录失效 / key 无效（唤醒一次）
-  running --> blocked: 磁盘满 / CLI 参数变化（唤醒）
+  running --> blocked: 磁盘满 / CLI 参数变化 / 守卫未生效（唤醒）
   needs_approval --> queued: approve / deny
   needs_auth --> queued: 重新登录后 unpause
   running --> done: 验收 PASS 且可无冲突合并
@@ -73,7 +75,10 @@ stateDiagram-v2
 | 分段 | 每段有墙钟上限（默认 12 分钟）和空闲超时；每段结束后由 nova-relay 在任务分支上 `git commit` 检查点，并把执行者的 PROGRESS 摘要写入 `progress.md`；下一段带「进度摘要」而非完整历史。 |
 | 本地重试 | 验收 FAIL 时把错误本身交给执行者重试，最多 `max_local_retries` 次再上报。 |
 | 隔离 | 每个任务一个 git worktree + 分支 `nova/<id>`；同项目文件范围重叠的任务不并发；PD / NM 等项目用各自的 repo、worktree 目录、env 文件、webhook、owner，路由拒绝跨项目路径。 |
-| 守卫 | `nova-guard`（原 pi-guard）：灾难删除、任何 `git push`、改 remote、发包、外发网络/消息、改主机配置、读凭据、写出 worktree / 禁止路径 → 拦截并进入审批流程。Claude 用 PreToolUse hook，Pi 用扩展；Codex 依赖其 `workspace-write` 沙箱 + 验收阶段检查。 |
+| 守卫 | `nova-guard`（原 pi-guard）：灾难删除、任何 `git push`、改 remote / git alias / hooksPath、发包、外发网络/消息、改主机配置、读凭据、写出 worktree / 禁止路径（含重定向、cp/mv/tee/rm/sed -i，符号链接解析后判断，目标无法解析默认拒绝）、执行者可能写的脚本（shell、npm scripts、Makefile、python/node 等启发式扫描）→ 拦截并进入审批流程。Claude 用 PreToolUse hook（已在 Claude Code 2.1.308 实测；有工具调用但 hook 没被调用 = 守卫失效 → blocked），Pi 用扩展（加载时写标记）；Codex 没有前置 hook：`workspace-write` 沙箱 + 对 `--json` 事件中每条命令的事后审计（命中 → audit 审批）+ 验收阶段检查。 |
+| 验收独立检查 | 共享 `.git/config` / `.git/hooks` 未被改（否则 `FAIL integrity`，不重试）、无越出 worktree 的符号链接、禁止路径、范围、删测试/加 skip、空 diff，再跑任务书命令与项目 checks。 |
+| 额度改路由 | 派发时主执行者暂停 → fallback；运行中的任务可按 `routing.reroute_paused` 在分段边界改路由（同主机原地切换，或跨主机用 git bundle 交接分支），默认关闭。 |
+| 并发 | 状态/批次/预算的读-改-写都在跨进程文件锁内；每台主机一个 worker；journal 带序号，崩溃后重放；续跑时先杀孤儿执行者进程组；`frozen` 只有在连续观察 3×TTL 仍不续租时才被杀（box 刚睡醒不会被误杀）。 |
 | 恢复 | 租约（lease）带 TTL，抢占是原子的，所以两个 watchdog 不会重复续跑；VPS watchdog 每 5 分钟经 Tailscale ssh 让 box 续跑；连不上 box 时看 box 推送的心跳，超时就发 webhook 让 Grok 醒来处理。 |
 | 密钥 | 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600）；日志/结果统一脱敏；执行者子进程拿不到 webhook 密钥。 |
 
@@ -85,7 +90,7 @@ stateDiagram-v2
 git clone <this repo> nova-relay && cd nova-relay
 ./install.sh --systemd box     # 在 box 上；VPS 上用 --systemd vps
 $EDITOR ~/.config/nova-relay/config.json   # 参考 docs/config.md
-nova-relay doctor
+nova-relay doctor          # 加 --live 做真实登录/key 检查（可选）
 ```
 
 Grok 派活（典型一轮）：

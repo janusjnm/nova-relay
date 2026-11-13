@@ -29,7 +29,7 @@
       "adapter": "claude",
       "host": "box",
       "bin": "claude",
-      "min_version": "1.0.0",
+      "min_version": "2.0.0",
       "fresh_session_every": 4,
       "budget": { "segments_per_day": 40, "minutes_per_day": 360 },
       "limits": { "max_parallel": 1 }
@@ -65,7 +65,8 @@
       { "type": "edit", "executor": "pi" },
       { "type": "text", "executor": "deepseek-text" }
     ],
-    "default": "pi"
+    "default": "pi",
+    "reroute_paused": "off"
   },
   "guard": {
     "protected_branches": ["main", "master", "release/*"],
