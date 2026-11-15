@@ -14,7 +14,7 @@
 | `hosts.<name>.ssh` | — | 远端主机必填：Tailscale MagicDNS 名或 ssh 别名 |
 | `hosts.<name>.bin` | `nova-relay` | 远端 nova-relay 路径 |
 | `hosts.<name>.role` | — | `box` / `vps`（其他值校验失败）；`claude` 只能在 `role: box` 的主机上 |
-| `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避。异步运行（≤120 s，超时算失败），期间租约照常续期；取消任务会杀掉它且不记录结论 |
+| `hosts.<name>.preflight_cmd` | — | 每段前执行的网络检查命令（如 `tailscale status --peers=false`），失败按网络错误退避。异步运行（≤120 s，超时算失败），期间租约照常续期；取消任务会杀掉它且不记录结论。任务开始时执行一次，第一段不再紧接着重复执行，之后每段前执行 |
 | `webhook` | — | 全局默认 webhook（`url_env`、`key_env`），项目可覆盖 |
 | `isolation` | `{"mode":"off"}` | 可选的**操作系统级进程隔离**（bubblewrap），默认关闭、行为不变；见下文「`isolation`」 |
 
@@ -75,7 +75,7 @@
 | pi | 在临时目录安装 pi 1.5.2（`@earendil-works/pi-coding-agent`），用本地模拟的 DeepSeek 接口（`~/.pi/agent/models.json` 覆盖 `baseUrl`）端到端实跑适配器构造的完整命令：扩展被加载并写出 `guard-loaded`，模型发起的 `git push origin main` 被拦下并生成审批，普通命令照常执行；去掉 `--no-extensions --no-approve` 时，全局与仓库 `.pi/extensions` 下的扩展都会被加载（能改写已放行的命令），加上后都不加载；无效 key 时输出 `401: {…authentication_error…}`（归类为 auth） | ✅ 已实机验证（用真实 DeepSeek key 的实跑 🟡） |
 | deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验；本仓库**没有**用真实 key 核实过任何模型 id，模型名只以你自己的 `doctor --live`（`GET /models`）为准 |
 
-无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查（按版本缓存 1 小时），不满足则任务 `blocked` 并唤醒。
+无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查，不满足则任务 `blocked` 并唤醒。通过的结果缓存 1 小时（`run/contract-<执行者>.json`），缓存键 = 解析后的二进制（按执行者环境的 PATH 查找、跟随符号链接后的真实路径、inode、大小、mtime、ctime）+ 检查内容（`min_version`、必需参数、version/help 参数）：换 `bin`、升级二进制、改 `min_version` 或 nova-relay 升级后必需参数变化都会重新检查。缓存命中且是原生二进制时不再启动任何进程；`bin` 是 `#!` 包装脚本（例如 `exec ~/.local/bin/claude.real "$@"`）或无法解析时，仍然每次执行 `--version`，只有版本字符串不变时才跳过 `--help`——包装脚本本身不变不能说明它调用的程序没变。`doctor` 总是完整检查。缓存只说明 CLI 的形状，**不代表已登录**（登录由凭据检查与 `doctor --live` 负责）。
 
 ## `isolation`（可选，默认关闭）
 

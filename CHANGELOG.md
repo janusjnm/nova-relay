@@ -91,6 +91,23 @@ A small, config-driven relay between a planner and coding executors:
   docs/failure-modes.md lists the pending external integration gates.
 - **CI**: `.github/workflows/test.yml` runs `npm test` on Node 22 for push and pull_request (no
   secrets, no services).
+- **Fewer redundant spawns, bounded worker log** (`tests/perf-1.test.mjs`):
+  - The CLI contract cache (`run/contract-<executor>.json`, 1 h) is now keyed on the resolved binary
+    (real path after PATH lookup and symlinks, inode, size, mtime, ctime) and on what was checked
+    (`min_version`, required flags, version/help args). Before, it was keyed on the version string
+    alone, so a raised `min_version`, a changed `bin` or a nova-relay upgrade with new required flags
+    could reuse a stale OK for up to an hour. A warm hit on an unchanged native binary spawns
+    nothing. A `#!` wrapper script, or a `bin` that cannot be resolved, still runs `--version`
+    every time; only `--help` is skipped while the version string matches. `doctor` still forces a
+    full check. The cache proves only the CLI shape, never a login. Old cache files are ignored.
+  - `runTask` no longer runs the CLI contract and `preflight_cmd` twice before the first segment:
+    the start preflight and the first segment's preflight ran back to back. The first segment skips
+    only those two probes; disk, pause and credential checks still run. Every later segment runs
+    the full preflight as before.
+  - `run/worker.log` rotates like `events.jsonl`: over 5 MB it is renamed to `worker.log.1` (one
+    generation kept) before the next worker is spawned. A worker still writing keeps appending to
+    `.1`; nothing is truncated. The spawning process now closes its copy of the log fd, so a
+    long-lived caller no longer leaks one fd per `spawnWorker()`.
 
 ### Setup requirements that will break an unedited or older config
 
