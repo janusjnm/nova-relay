@@ -87,7 +87,7 @@ stateDiagram-v2
 | 用量与预算 | `segments`/`minutes` 本地计量；token/费用只记提供方**报告**的数字，没报告就是**未知**（不当作 0），不估价。订阅 CLI 的 token/费用不是账单、不是剩余额度。上限在新分段开始前检查，`segments_per_day` 原子占位；已在运行的分段可能超出分钟/token/费用上限（不是精确的硬性计费上限）。`nova-relay stats [--json]` 显示当天用量、上限、暂停与通知计数（送达数/尝试数，不是模型消耗） |
 | 路由证据 | 每个任务终态时在本机记录类型、执行者、结果、重试、耗时与已报告的费用；`nova-relay recommend` 给出带样本数和保守置信度（样本不足明确标出）的建议，**从不自动改路由** |
 | 备份 / 恢复 | `snapshot`（不含密钥、日志、租约，**不含 git 分支与 worktree**）、`restore --from … --dest <空目录>`（先全部校验：路径穿越、符号链接、哈希、批次↔任务引用；不启动 worker、未完成任务改为 blocked、待发通知扣住不重放）、`migrate --dry-run`（能读/不能读、回滚步骤） |
-| 密钥 | 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600）。`secrets.env` 里的每个变量名、配置声明的密钥变量名（webhook `url_env`/`key_env`、执行者 `key_env`）以及像密钥的名字（`*_KEY`、`*_TOKEN`…），不论叫什么都不传给执行者与验收命令，值在日志/结果里脱敏（pi 显式拿到它自己的 `key_env`）。这是环境变量层面的隔离，不是沙箱：关闭进程隔离时，同一用户下的代码仍能按绝对路径读文件（见 docs/security.md）。 |
+| 密钥 | 只来自环境变量或仓库外的密钥文件（必须 0600）：`$NOVA_RELAY_SECRETS`，否则 `$XDG_CONFIG_HOME/nova-relay/secrets.env`（仅当 `XDG_CONFIG_HOME` 为绝对路径），否则 `~/.config/nova-relay/secrets.env`；配置文件按同样顺序（`$NOVA_RELAY_CONFIG`、`config.json`），与 `install.sh` 写入的目录一致。覆盖变量必须是绝对路径，没有 `--config` 参数，文件缺失时在选中的路径报错、不去别处找（见 docs/config.md）。`secrets.env` 里的每个变量名、配置声明的密钥变量名（webhook `url_env`/`key_env`、执行者 `key_env`）以及像密钥的名字（`*_KEY`、`*_TOKEN`…），不论叫什么都不传给执行者与验收命令，值在日志/结果里脱敏（pi 显式拿到它自己的 `key_env`）。这是环境变量层面的隔离，不是沙箱：关闭进程隔离时，同一用户下的代码仍能按绝对路径读文件（见 docs/security.md）。 |
 
 > ⚠️ **恢复能力必须在真实环境中验证。** 睡眠、重启、Tailscale 断线下的续跑逻辑有单元/集成测试覆盖，但真实机器上的行为（systemd 定时器、ssh、CLI 版本）只能实测确认。nova-relay **不保证**可用性、不保证零停机，也不能唤醒睡眠中的 box。它的设计目标是：状态在磁盘上、能检测并每次中断通知一次、主机重新运行后（需要它自己的定时器或 watchdog 跑起来）从 checkpoint 续跑、重试与时长都有上限而不是无限循环、每次停止都记录为任务状态而不是悄悄丢掉。这些是经本地测试检查的设计目标，不是保证——磁盘损坏、主机再也回不来、未实测的真实机器行为都不在其内。
 
@@ -96,7 +96,7 @@ stateDiagram-v2
 ```bash
 git clone <this repo> nova-relay && cd nova-relay
 ./install.sh --systemd box     # 在 box 上；VPS 上用 --systemd vps
-$EDITOR ~/.config/nova-relay/config.json   # 参考 docs/config.md
+$EDITOR ~/.config/nova-relay/config.json   # 或 $XDG_CONFIG_HOME/nova-relay/；nova-relay config-check 会打印实际路径
 nova-relay doctor          # 加 --live 做真实登录/key 检查（可选）
 ```
 

@@ -23,7 +23,7 @@
 |---|---|
 | `nova-relay abandon <batch> --host H [--owner O] [--yes] [--json]` | **运维员显式放弃**某台连不上的主机上该批次所有未结束的条目（`submitting`/`queued`/`running`/…）。不带 `--yes` 只是演练（列出会放弃哪些）。带 `--yes`：这些条目在 coordinator 的批次视图里变成终态 `abandoned`（verdict `ABANDONED`，批次结论 FAIL，照常发一次 `batch_done`，之后可以 ack）。**它不会停止那台主机上的任何东西**：主机如果其实还在运行（睡着、网络隔离、只是从这里连不上），任务进程可能仍在后台运行并继续改它的 worktree 和 `nova/<task>` 分支；每次都会打印这条警告。同时排队一条取消（`abandoned` rpc），只有主机重新可达时才会送达（不存在的 id 写墓碑，未结束的任务改为 `cancelled`），在那之前没有任何东西被确认停止。之后该主机对这些条目的迟到上报只记录在 `late` 字段里，**不会**改变条目状态或批次结论。不能对 coordinator 自己（用 `cancel`）或已 ack 的批次使用。**没有任何自动放弃**：没有超时会替运维员放弃 |
 | `nova-relay doctor [--no-remote] [--live]` | 检查全部前提（见 failure-modes.md），有 FAIL 退出码 1。`--live`（可选）做真实登录/key 检查：`claude auth status`、`codex login status`、DeepSeek `/user/balance` + `/models`（key 与模型名）；不调用模型、不发 webhook |
-| `nova-relay config-check` | 只校验配置 |
+| `nova-relay config-check` | 只校验配置，成功时打印 `OK <路径>`。路径：`$NOVA_RELAY_CONFIG`，否则 `$XDG_CONFIG_HOME/nova-relay/config.json`（仅当 `XDG_CONFIG_HOME` 为绝对路径），否则 `~/.config/nova-relay/config.json`；密钥文件同理（`$NOVA_RELAY_SECRETS` / `secrets.env`）。覆盖变量必须是绝对路径。没有 `--config` 参数。详见 [config.md](config.md) |
 | `nova-relay worker [--once]` | 运行本机可运行任务（通常由 dispatch / tick 自动后台启动）；每台主机只有一个 worker，重复启动的会立即退出 |
 | `nova-relay resume --all` | 幂等：续跑租约失效的任务、到期的 paused 任务 |
 | `nova-relay tick` | 定时器入口：心跳 → resume → 心跳检查（coordinator）→ flush outbox → gc |

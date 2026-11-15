@@ -133,6 +133,31 @@ A small, config-driven relay between a planner and coding executors:
     separately updated payload they load changes. The TTL, `--clear` and `doctor` are the remedies;
     nova-relay cannot see such a change. Fewer `--version`/`--help` spawns save local process starts
     only, not model calls, Grok wakes or quota.
+- **Config/secrets paths follow `XDG_CONFIG_HOME`, like `install.sh`** (`tests/configpaths.test.mjs`):
+  - Bug: `install.sh` wrote `config.json`/`secrets.env` under `$XDG_CONFIG_HOME/nova-relay`, but the
+    CLI only looked in `~/.config/nova-relay`, so after an install with a custom `XDG_CONFIG_HOME`,
+    `config-check`, `doctor` and the watchdog failed with `config file not found`.
+  - One rule now for the CLI, `doctor` and the isolation bind policy (`lib/paths.mjs`), each file
+    independently: (1) `NOVA_RELAY_CONFIG` / `NOVA_RELAY_SECRETS` if non-blank — must be absolute
+    (a leading `~` is expanded against HOME), anything else is a config error (exit 3), never
+    resolved against the current directory; setting one does not move the other; (2) else
+    `$XDG_CONFIG_HOME/nova-relay/…` if `XDG_CONFIG_HOME` is an absolute path (relative or blank is
+    ignored, per the XDG Base Directory spec); (3) else `$HOME/.config/nova-relay/…`. A missing
+    file at the chosen path is reported there; there is no fallback to the other location and no
+    migration or copying between them. There is no `--config`/`--secrets` flag.
+  - Behaviour change: a relative `NOVA_RELAY_CONFIG` / `NOVA_RELAY_SECRETS` used to be resolved
+    against the current directory; it is now refused.
+  - `install.sh` refuses a relative `XDG_CONFIG_HOME` (instead of creating directories under the
+    current directory) and a relative `NOVA_RELAY_CONFIG`/`NOVA_RELAY_SECRETS`. With a non-default
+    `XDG_CONFIG_HOME` it adds a quoted `Environment="XDG_CONFIG_HOME=…"` to the installed systemd
+    units and sets it in the printed cron line, so timers read the same files; with the default it
+    adds nothing. Printed paths are shell-quoted (spaces work; `%` is escaped in the cron line).
+    Existing `config.json`/`secrets.env` are still never overwritten; a unit you edited is still
+    kept and the new one (with the `Environment=` line) written beside it as `<unit>.nova-new`.
+    Unchanged: units go to `$XDG_CONFIG_HOME/systemd/user`, which the systemd user manager only
+    reads if its own environment has the same `XDG_CONFIG_HOME`; check with
+    `systemctl --user cat <unit>` before relying on the timer.
+  - Config errors now name the file; `doctor`'s `config` line shows the path it used.
 
 ### Setup requirements that will break an unedited or older config
 
@@ -152,8 +177,10 @@ A small, config-driven relay between a planner and coding executors:
   rules, webhook, projects, executors per adapter), so a typo such as `forbiden_paths`,
   `protected_branch` or `budgt` cannot silently drop a protection. Keys starting with `_` or `$` are
   comments. `hosts.<h>.role` must be `box` or `vps`.
-- **Secrets** come only from environment variables or `~/.config/nova-relay/secrets.env` (mode 0600,
-  otherwise refused). Project `env_file`s must be 0600 as well.
+- **Secrets** come only from environment variables or the secrets file (mode 0600, otherwise
+  refused): `$NOVA_RELAY_SECRETS`, else `$XDG_CONFIG_HOME/nova-relay/secrets.env`, else
+  `~/.config/nova-relay/secrets.env` (the config file follows the same order with
+  `NOVA_RELAY_CONFIG`/`config.json`; overrides must be absolute). Project `env_file`s must be 0600 as well.
 - Node.js >= 22 and git >= 2.38 (`merge-tree --write-tree`). `install.sh` records the absolute node
   path so ssh and systemd (short PATH) work, and writes systemd units pointing at the bin directory
   actually used (`NOVA_RELAY_BIN_DIR`). It never overwrites an existing `config.json`, `secrets.env`,

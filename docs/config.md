@@ -1,6 +1,14 @@
 # 配置参考
 
-位置：`$NOVA_RELAY_CONFIG`，默认 `~/.config/nova-relay/config.json`。纯 JSON。启动时完整校验，任何错误都会带字段路径列出并以退出码 3 拒绝运行（`nova-relay config-check`）。**任何一层出现未知的键都是错误**（顶层、`hosts.*`、`limits`、`guard`、`routing`、`routing.rules[*]`、`webhook`、`projects.*`、`executors.*` 按适配器），拼写错误不会悄悄回落到更弱的默认值（例如 `forbiden_paths`、`protected_branch`、`budgt`）。以 `_` 或 `$` 开头的键视为注释（如 `"_comment": "..."`）。完整示例：[config/nova-relay.example.json](../config/nova-relay.example.json)。
+位置（与 `install.sh` 写入的目录一致；没有 `--config`/`--secrets` 命令行参数）：
+
+1. `$NOVA_RELAY_CONFIG`（配置文件）/ `$NOVA_RELAY_SECRETS`（密钥文件），两者互相独立，只设一个不会改变另一个的位置。必须是绝对路径（开头的 `~` 按 HOME 展开）；相对路径等其它值是配置错误（退出码 3），**不会**按当前目录解析。为空或只有空白视为未设置。
+2. 否则若 `XDG_CONFIG_HOME` 是绝对路径：`$XDG_CONFIG_HOME/nova-relay/config.json` 与 `secrets.env`。相对路径或空值按 XDG 规范忽略。
+3. 否则：`~/.config/nova-relay/config.json` 与 `secrets.env`（`~` 即 `$HOME`）。
+
+选中的路径就是最终路径：文件不存在就在该路径报错，不会再去另一个位置找，也不会在两个位置之间复制或迁移。`nova-relay config-check` 打印实际使用的路径，`doctor` 的 `config` / `secrets file` 两行也会显示。
+
+纯 JSON。启动时完整校验，任何错误都会带字段路径列出并以退出码 3 拒绝运行（`nova-relay config-check`）。**任何一层出现未知的键都是错误**（顶层、`hosts.*`、`limits`、`guard`、`routing`、`routing.rules[*]`、`webhook`、`projects.*`、`executors.*` 按适配器），拼写错误不会悄悄回落到更弱的默认值（例如 `forbiden_paths`、`protected_branch`、`budgt`）。以 `_` 或 `$` 开头的键视为注释（如 `"_comment": "..."`）。完整示例：[config/nova-relay.example.json](../config/nova-relay.example.json)。
 
 ## 顶层
 
