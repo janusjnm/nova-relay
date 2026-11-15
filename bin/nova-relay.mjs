@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // nova-relay — planner/executor relay CLI. Node >= 22, no dependencies. See docs/cli.md.
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { ConfigError, configPath, loadConfig, loadSecrets, projectPaths, readSecretEnvFile } from "../lib/config.mjs";
-import { HANDLERS, KeyConflictError, abandonWarning, batchOutcome, dispatch, dispatchExitCode, flushOutbox, gc, makeContext, resumeAll, showTime, tick, verdictLine, watchdog, worker } from "../lib/relay.mjs";
+import { HANDLERS, KeyConflictError, abandonWarning, batchOutcome, dispatch, dispatchExitCode, flushOutbox, gc, makeContext, resumeAll, logWatchdogRun, showTime, tick, verdictLine, watchdog, watchdogLogPath, worker } from "../lib/relay.mjs";
 import { call } from "../lib/rpc.mjs";
 import { doctor } from "../lib/doctor.mjs";
 import { accept } from "../lib/acceptance.mjs";
-import { acceptanceEnv } from "../lib/runner.mjs";
+import { acceptanceEnv, contractCache } from "../lib/runner.mjs";
 import { parseBrief, BRIEF_TEMPLATE } from "../lib/brief.mjs";
 import { unpauseExecutor } from "../lib/budget.mjs";
 import { VERSION, redact } from "../lib/util.mjs";
@@ -35,7 +35,10 @@ operator commands
   doctor [--no-remote] [--live]   config-check   unpause <executor>   accept <task>
   abandon <batch> --host H [--owner O] [--yes] [--json]  give up on a host's unresolved entries (never
                            automatic; does NOT stop remote work; without --yes: dry run)
-  worker [--once]          resume --all     tick     watchdog     heartbeat
+  worker [--once]          resume --all     tick     heartbeat
+  watchdog [--log PATH] [--json]   appends one JSON line per run to <home>/run/watchdog.log (or PATH;
+                           rotated at 5 MB, one .1 kept, 0600); prints only on a terminal or --json
+  contract-cache [--clear] [--json]   list / delete the cached CLI contract checks (run/contract-*.json)
   outbox [--flush]         gc               rpc <method> (JSON on stdin; used over ssh)
   (--flush also retries dead letters; --live makes doctor do real login/key checks, opt-in)
   stats [--json]           today's measured usage (unknown ≠ 0), caps, pauses, notification counts
@@ -48,7 +51,7 @@ config: $NOVA_RELAY_CONFIG or ~/.config/nova-relay/config.json`;
 
 function parseArgs(argv) {
   const pos = [], flags = {};
-  const VALUE = new Set(["project", "owner", "n", "key", "host", "out", "from", "dest"]);
+  const VALUE = new Set(["project", "owner", "n", "key", "host", "out", "from", "dest", "log"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) { const k = a.slice(2); if (VALUE.has(k)) flags[k] = argv[++i]; else flags[k] = true; }
@@ -182,7 +185,24 @@ async function main() {
     case "worker": return worker(ctx, { once: Boolean(flags.once) });
     case "resume": return out(await resumeAll(ctx));
     case "tick": return out(await tick(ctx));
-    case "watchdog": return out(await watchdog(ctx));
+    case "watchdog": {
+      // Logs itself (bounded, rotated under a lock): cron/systemd need no `>>` redirect. stdout
+      // only for a terminal or --json, so a cron line without a redirect mails nothing on success.
+      const logPath = typeof flags.log === "string" ? resolve(flags.log) : watchdogLogPath(ctx);
+      let r;
+      try { r = await watchdog(ctx); } catch (e) { logWatchdogRun(logPath, { ok: false, error: String(e.message || e) }); throw e; }
+      const unreachable = Object.entries(r.hosts).filter(([, h]) => !h.reachable).map(([h]) => h);
+      logWatchdogRun(logPath, { ok: true, unreachable, result: r });
+      if (process.stdout.isTTY || flags.json) out(r);
+      return;
+    }
+    case "contract-cache": {
+      const rows = contractCache(cfg.home, { clear: Boolean(flags.clear) });
+      if (flags.json) return out(rows);
+      if (!rows.length) return out("no cached CLI contracts");
+      for (const c of rows) out(`${flags.clear ? "cleared " : ""}${c.executor} ${c.ok ? "OK" : "FAIL"} ${c.version || "-"} at ${c.at ? showTime(ctx, c.at) : "-"}`);
+      return;
+    }
     case "heartbeat": return out(await coord("heartbeat", { host: cfg.self }));
     case "outbox": {
       if (flags.flush) { const n = ctx.outbox.reviveDead(); if (n) out(`revived ${n} dead letters`); out(await flushOutbox(ctx)); }

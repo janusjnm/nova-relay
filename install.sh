@@ -86,6 +86,10 @@ if [ -n "$ROLE" ]; then
   done
   echo "     enable with: systemctl --user daemon-reload && systemctl --user enable --now $TIMER"
   echo "     (and: loginctl enable-linger \$USER so it runs without a login session)"
+  if [ "$ROLE" = vps ]; then
+    echo "     the watchdog logs to <home>/run/watchdog.log itself (rotated at 5 MB, one .1 kept);"
+    echo "     with cron instead: */5 * * * * $BIN_DIR/nova-relay watchdog   (no >> redirect)"
+  fi
 fi
 
 echo ""

@@ -4,4 +4,6 @@ After=network-online.target tailscaled.service
 
 [Service]
 Type=oneshot
+# nova-relay appends one JSON line per run to ~/.nova-relay/run/watchdog.log itself (rotated at
+# 5 MB under a lock, one .1 kept, 0600). Do not add a StandardOutput=append: redirect to that file.
 ExecStart=%h/.local/bin/nova-relay watchdog
