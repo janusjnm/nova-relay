@@ -227,7 +227,8 @@ test("preflight is async: the task lease renews while a long preflight_cmd runs;
   await worker(ctx, { once: true });
   const t = ctx.store.get(d.tasks[0].id);
   assert.equal(t.state, "done", `${t.state}: ${t.reason}`);
-  assert.equal(readFileSync(join(root, "renewed"), "utf8").trim().split("\n").length, 2, "lease renewed during both preflight runs (before start, before the segment)");
+  // One run: the start preflight; the first segment does not repeat preflight_cmd (tests/perf-1).
+  assert.equal(readFileSync(join(root, "renewed"), "utf8").trim().split("\n").length, 1, "lease renewed during the preflight run");
   assert.ok(cfg.limits.lease_ttl_sec * 1000 < 3000, "the preflight outlasted the lease TTL");
 });
 
