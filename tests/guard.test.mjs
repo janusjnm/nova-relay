@@ -41,6 +41,16 @@ test("guard allows normal work", () => {
   for (const c of ALLOW) assert.equal(checkCommand(c, { allow_hosts: ["registry.npmjs.org"] }), null, `should allow: ${c}`);
 });
 
+test("guard: nova-relay secrets under a custom XDG_CONFIG_HOME are secrets too (regression; heuristic, not a sandbox)", () => {
+  for (const c of ["cat $HOME/.config/nova-relay/secrets.env", "cat $XDG_CONFIG_HOME/nova-relay/secrets.env", "cat /x/cfg/nova-relay/secrets.env",
+    "cat /x/cfg/nova-relay/pd.env", "cp nova-relay/secrets.env /tmp/s", "head \"$XDG_CONFIG_HOME/nova-relay/pd.env\""]) {
+    assert.equal(checkCommand(c)?.category, "secrets", c);
+  }
+  for (const c of ["cat /x/cfg/nova-relay/config.json", "cat ~/src/my-nova-relay/x.env", "cat nova-relay/docs/example.env.md"]) {
+    assert.notEqual(checkCommand(c)?.category, "secrets", c);
+  }
+});
+
 test("splitCommands descends into subshells and bash -c", () => {
   const parts = splitCommands("a; b && c | d $(e f) `g` bash -c 'h; i'");
   for (const x of ["a", "b", "c", "e f", "g", "h", "i"]) assert.ok(parts.some((p) => p === x || p.startsWith(`${x} `) || p === x), `missing ${x} in ${JSON.stringify(parts)}`);

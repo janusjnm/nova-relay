@@ -47,7 +47,10 @@ operator commands
   restore --from DIR --dest DIR [--replay-outbox] [--json]
                            restore drill into an empty dir (never the live home; starts nothing)
   migrate --dry-run [--from DIR] [--json]   what this version can read + rollback plan
-config: $NOVA_RELAY_CONFIG or ~/.config/nova-relay/config.json`;
+config:  $NOVA_RELAY_CONFIG, else $XDG_CONFIG_HOME/nova-relay/config.json, else ~/.config/nova-relay/config.json
+secrets: $NOVA_RELAY_SECRETS, else $XDG_CONFIG_HOME/nova-relay/secrets.env, else ~/.config/nova-relay/secrets.env
+         (each override is independent and must be absolute; a relative or empty XDG_CONFIG_HOME is
+         ignored; no --config/--secrets flag; the chosen path is never mixed with another location)`;
 
 function parseArgs(argv) {
   const pos = [], flags = {};
@@ -79,10 +82,12 @@ async function main() {
   if (cmd === "version" || cmd === "--version") return out(VERSION);
   if (cmd === "brief-template") return out(BRIEF_TEMPLATE);
 
-  const sec = loadSecrets();
-  if (sec.error) console.error(`nova-relay: ${sec.error} (not loaded)`);
   let cfg;
-  try { cfg = loadConfig(); } catch (e) {
+  try {
+    const sec = loadSecrets();
+    if (sec.error) console.error(`nova-relay: ${sec.error} (not loaded)`);
+    cfg = loadConfig();
+  } catch (e) {
     if (cmd === "rpc") { out({ error: e.message }); process.exit(1); }
     console.error(e.message); process.exit(e instanceof ConfigError ? 3 : 1);
   }

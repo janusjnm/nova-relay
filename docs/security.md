@@ -78,7 +78,7 @@ Grok 把命令原样给用户看 → 用户决定
 
 ## 密钥
 
-- 只来自环境变量或仓库外的 `~/.config/nova-relay/secrets.env`（必须 0600，否则拒绝加载）与项目 `env_file`。
+- 只来自环境变量或仓库外的密钥文件（`$NOVA_RELAY_SECRETS`，否则绝对路径的 `$XDG_CONFIG_HOME/nova-relay/secrets.env`，否则 `~/.config/nova-relay/secrets.env`；必须 0600，否则拒绝加载，见 config.md）与项目 `env_file`。进程隔离拒绝绑定的是这个实际使用的密钥文件（及其祖先目录）。
 - 配置文件里只写**变量名**（`url_env`/`key_env`）。
 - 执行者子进程环境会剔除：名字匹配 `WEBHOOK|NOVA_RELAY_*|*_KEY|*_KEY_*|*_TOKEN|SECRET|PASSWORD|CREDENTIAL|GH_*|GITHUB_TOKEN` 的变量、`SSH_AUTH_SOCK`、`GIT_ASKPASS`/`GIT_SSH`/`GIT_SSH_COMMAND`、整组 `GIT_CONFIG_COUNT/KEY_n/VALUE_n/PARAMETERS`（只删一部分会让执行者里的所有 git 命令报错），以及各适配器的网关/API key 变量（例外：pi 所需的 `key_env`，它会以 `DEEPSEEK_API_KEY` 的名字传给 pi）。**按声明剔除**：不管变量叫什么，`secrets.env` 里出现的每个名字、配置里声明的 `webhook.url_env`/`key_env`、执行者的 `key_env` 都不会传给执行者和验收命令，它们的值也加入脱敏列表（例如把 webhook key 放在 `PD_BEARER` 里，名字不匹配上面的模式，也一样被剔除）。验收命令同样拿不到这些变量，但能拿到项目 `env_file` 的变量。
 - `events.jsonl`、分段日志、`progress.md`、`result.md`、审批记录都经过脱敏（常见 key/token 格式、Bearer 值、JWT、URL 中的密码、私钥块、以及所有已知密钥值）。分段日志按**整行**脱敏，密钥跨两个输出块也能被抹掉。Codex 的 `--output-last-message` 文件读取后即删除。

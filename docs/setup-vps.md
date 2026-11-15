@@ -24,7 +24,7 @@ systemctl --user enable --now nova-relay-watchdog.timer
 loginctl enable-linger "$USER"
 ```
 
-`install.sh` 会记录当前 `node` 的绝对路径（`bin/.node-path`），所以经 ssh 或 systemd（PATH 很短）调用 `nova-relay` 时也能找到用 nvm 等方式安装的 Node；同目录下 `npm -g` 安装的 `codex`/`pi` 也会加入 PATH。若执行者 CLI 在别处，请在配置里写 `bin` 的绝对路径。systemd 单元的 `ExecStart` 指向实际使用的 bin 目录（`NOVA_RELAY_BIN_DIR`）；你改过的单元重复安装时不会被覆盖，新版本写在旁边的 `<单元>.nova-new`。
+`install.sh` 会记录当前 `node` 的绝对路径（`bin/.node-path`），所以经 ssh 或 systemd（PATH 很短）调用 `nova-relay` 时也能找到用 nvm 等方式安装的 Node；同目录下 `npm -g` 安装的 `codex`/`pi` 也会加入 PATH。若执行者 CLI 在别处，请在配置里写 `bin` 的绝对路径。systemd 单元的 `ExecStart` 指向实际使用的 bin 目录（`NOVA_RELAY_BIN_DIR`）；你改过的单元重复安装时不会被覆盖，新版本写在旁边的 `<单元>.nova-new`。配置与密钥文件的位置规则同 box（`NOVA_RELAY_CONFIG` / `NOVA_RELAY_SECRETS`，否则绝对路径的 `$XDG_CONFIG_HOME/nova-relay/`，否则 `~/.config/nova-relay/`，见 [config.md](config.md) 与 [setup-box.md](setup-box.md) 第 2 节）；非默认 `XDG_CONFIG_HOME` 时单元里会加 `Environment="XDG_CONFIG_HOME=…"`。
 
 没有 systemd 时用 cron（效果相同）：
 
@@ -32,11 +32,13 @@ loginctl enable-linger "$USER"
 */5 * * * * $HOME/.local/bin/nova-relay watchdog
 ```
 
+`install.sh --systemd vps` 会打印适合本机的 cron 行：路径带引号（可含空格，`%` 转义为 `\%`）；使用非默认 `XDG_CONFIG_HOME` 时行首带 `XDG_CONFIG_HOME=…`，cron 的最小环境下 watchdog 才能找到同一份配置。
+
 **watchdog 自己写日志**：每次运行向 `<home>/run/watchdog.log`（默认 `~/.nova-relay/run/watchdog.log`，或 `--log PATH`）追加一行 JSON（`ts`、`ok`、`unreachable`、`result`；出错时 `ok: false` 与 `error`）。超过 5 MB 时在文件锁内轮转为 `watchdog.log.1`（只保留一代，不截断唯一的一份），权限 0600；多个 watchdog 同时追加、同时轮转都不会丢行。非终端（cron / systemd）运行时成功结果不打印到 stdout，所以上面的 cron 行**不要**再加 `>> …/watchdog.log`（旧写法：不轮转、无限增长，且会与内置日志重复）；只有配置无法加载这类早期错误会写到 stderr（cron 会邮件或记到 syslog，systemd 记到 journal）。从旧的 cron 写法升级：改掉 crontab 里的重定向即可，已有的 `watchdog.log` 会被继续使用、改为 0600 并按大小轮转。手动在终端运行或加 `--json` 时照常打印结果。
 
 ## 3. 密钥
 
-全部写入 `~/.config/nova-relay/secrets.env`（`install.sh` 已建好，权限必须 0600，否则 nova-relay 拒绝加载）：
+全部写入密钥文件（默认 `~/.config/nova-relay/secrets.env`，设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/nova-relay/secrets.env`，`NOVA_RELAY_SECRETS` 优先；`nova-relay doctor` 的 `secrets file` 行显示实际路径。`install.sh` 已建好，权限必须 0600，否则 nova-relay 拒绝加载）：
 
 ```bash
 PD_NOVA_WEBHOOK_URL=https://<grok-routine-webhook>
