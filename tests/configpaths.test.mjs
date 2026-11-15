@@ -4,12 +4,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ConfigError, configPath, loadConfig, loadSecrets, secretsPath } from "../lib/config.mjs";
-import { policyOf, unsafeBind } from "../lib/isolation.mjs";
+import { ConfigError, configPath, loadConfig, loadSecrets, normalizeConfig, secretsPath } from "../lib/config.mjs";
+import { normalizeIsolation, policyOf, unsafeBind } from "../lib/isolation.mjs";
 import { isolatedEnv } from "./helpers.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -76,6 +76,27 @@ test("isolation: the bind policy protects the secrets file the CLI actually load
   assert.equal(policyOf({ cfg, env: { HOME: "/h", XDG_CONFIG_HOME: "/x/cfg", NOVA_RELAY_SECRETS: "/etc/nr/s.env" } }).secretsFile, "/etc/nr/s.env");
   const pol = policyOf({ cfg, env: { HOME: "/h", XDG_CONFIG_HOME: "/x/cfg" } });
   assert.match(unsafeBind("/x/cfg", pol), /secrets file/, "binding the custom XDG dir would expose secrets.env");
+  // The resolved config dir is a credential path like ~/.config/nova-relay (regression: config.json was bindable).
+  assert.equal(pol.configDir, "/x/cfg/nova-relay");
+  assert.match(unsafeBind("/x/cfg/nova-relay/config.json", pol), /credential\/secret path \(\/x\/cfg\/nova-relay\)/);
+  assert.match(unsafeBind("/x/cfg/nova-relay", pol), /secrets file|credential/);
+  assert.match(unsafeBind(join(homedir(), ".config", "nova-relay", "config.json"), pol), /credential|secrets/, "default dir still refused");
+  assert.equal(unsafeBind("/x/cfg/other", pol), null);
+});
+
+test("isolation: config ro_binds may not reach the custom XDG config dir (normalizeIsolation uses env)", () => {
+  const env = { HOME: "/h", XDG_CONFIG_HOME: "/x/cfg" };
+  for (const b of ["/x/cfg/nova-relay/config.json", "/x/cfg/nova-relay", "/x/cfg"]) {
+    const p = [];
+    normalizeIsolation({ ro_binds: [b] }, p, { novaHome: "/nova-home", env });
+    assert.equal(p.length, 1, `${b}: ${JSON.stringify(p)}`);
+  }
+  const p = [];
+  normalizeIsolation({ ro_binds: ["/opt/tools"] }, p, { novaHome: "/nova-home", env });
+  assert.deepEqual(p, []);
+  // and loadConfig/normalizeConfig pass the caller's env through
+  const raw = { self: "vps", hosts: { vps: { role: "vps" } }, home: "/nova-home", isolation: { ro_binds: ["/x/cfg/nova-relay/config.json"] } };
+  assert.throws(() => normalizeConfig(raw, env), (e) => e instanceof ConfigError && /ro_binds.*credential/.test(e.message));
 });
 
 // ------------------------------------------------------------------ CLI (old bug: XDG ignored)
