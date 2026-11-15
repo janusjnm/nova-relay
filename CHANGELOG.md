@@ -108,6 +108,31 @@ A small, config-driven relay between a planner and coding executors:
     generation kept) before the next worker is spawned. A worker still writing keeps appending to
     `.1`; nothing is truncated. The spawning process now closes its copy of the log fd, so a
     long-lived caller no longer leaks one fd per `spawnWorker()`.
+- **Bounded watchdog log, contract cache controls** (`tests/followup-1.test.mjs`):
+  - `nova-relay watchdog` writes its own log: one JSON line per run (`ts`, `ok`, `unreachable`,
+    `result`, or `ok: false` + `error`) appended to `<home>/run/watchdog.log` or `--log PATH`.
+    Over 5 MB it rotates to `watchdog.log.1` (one generation kept, never truncated), mode 0600.
+    Size check, rename and append run under the existing link-based file lock (Node has no flock
+    binding), so concurrent watchdogs neither replace a fresh `.1` nor lose a line; if the lock
+    cannot be had within 5 s (a stopped holder is never stolen from) the line is appended unlocked
+    and only the rotation is skipped. On a non-terminal stdout (cron, systemd) the result is not
+    printed; `--json` or a terminal prints it. The documented cron line no longer redirects with
+    `>> …/watchdog.log`, which never rotated and would now duplicate every line. Upgrading: drop
+    the redirect from the crontab; an existing `watchdog.log` is reused, set to 0600 and rotated.
+    The systemd unit is unchanged apart from a comment.
+  - `run/worker.log`: the size check, rename and open now happen under the same lock. Two
+    spawners racing could both rename, the second replacing the `.1` just made from the live log.
+  - New limit `contract_cache_ttl_sec` (default 3600, per executor overridable; unknown limit keys
+    are still rejected). Lowering it takes effect for existing cache entries.
+  - The cache key also includes the size/mtime/ctime of the nearest `package.json` beside the
+    resolved binary or one directory up (npm layout `…/claude-code/{package.json,bin/claude.exe}`).
+  - `nova-relay contract-cache [--clear] [--json]` lists or deletes `run/contract-*.json`; the next
+    preflight then runs the full check. `doctor` still forces one. Credentials are still checked on
+    every preflight; the cache is never login proof; an aborted check still writes nothing.
+  - Not covered, by design: a native binary and its `package.json` that stay identical while a
+    separately updated payload they load changes. The TTL, `--clear` and `doctor` are the remedies;
+    nova-relay cannot see such a change. Fewer `--version`/`--help` spawns save local process starts
+    only, not model calls, Grok wakes or quota.
 
 ### Setup requirements that will break an unedited or older config
 

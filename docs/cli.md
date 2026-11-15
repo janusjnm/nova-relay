@@ -27,7 +27,8 @@
 | `nova-relay worker [--once]` | 运行本机可运行任务（通常由 dispatch / tick 自动后台启动）；每台主机只有一个 worker，重复启动的会立即退出 |
 | `nova-relay resume --all` | 幂等：续跑租约失效的任务、到期的 paused 任务 |
 | `nova-relay tick` | 定时器入口：心跳 → resume → 心跳检查（coordinator）→ flush outbox → gc |
-| `nova-relay watchdog` | VPS 定时器入口：tick + 经 ssh 让**正在运行**的执行主机 resume；连不上的主机只记录 `reachable: false` 与 `unreachable_since`（不能唤醒它） |
+| `nova-relay watchdog [--log PATH] [--json]` | VPS 定时器入口：tick + 经 ssh 让**正在运行**的执行主机 resume；连不上的主机只记录 `reachable: false` 与 `unreachable_since`（不能唤醒它）。每次运行向 `<home>/run/watchdog.log`（或 `--log PATH`）追加一行 JSON，超过 5 MB 在文件锁内轮转为 `.1`（保留一代，0600，并发写不丢行）；结果只在终端或 `--json` 时打印，cron / systemd 不需要也不应该再用 `>>` 重定向 |
+| `nova-relay contract-cache [--clear] [--json]` | 列出 / 删除 CLI 契约缓存（`run/contract-*.json`：`--version` / `--help` 检查结果）。`--clear` 后下一次 preflight 完整检查；手动升级执行者 CLI 后建议执行一次（缓存看不见原生文件与 `package.json` 都没变时单独更新的其他内容）。不涉及凭据，缓存从来不代表已登录；`doctor` 总是强制检查 |
 | `nova-relay heartbeat` | 手动向 coordinator 推心跳 |
 | `nova-relay unpause <executor>` | 重新登录/充值后解除暂停，把 needs_auth/paused 任务重新排队并向 coordinator 上报 |
 | `nova-relay accept <task>` | 手动重跑验收（与 runner 相同：任务分支提交在独立临时 clone 里的干净检出、白名单环境 + 空 HOME + 私有 TMPDIR + 清理过的 PATH + 项目 `env_file`、`acceptance_setup`、篡改检查；与 worker 的验收用不同的临时目录），打印 `PASS` / `FAIL <where>`；worktree 里有未提交改动时为 `FAIL uncommitted`。`isolation` 为 strict 且包含 `acceptance` 时同样在 bwrap 里运行，不可用 → `FAIL isolation`（不会无隔离运行） |

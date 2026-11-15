@@ -29,8 +29,10 @@ loginctl enable-linger "$USER"
 没有 systemd 时用 cron（效果相同）：
 
 ```cron
-*/5 * * * * $HOME/.local/bin/nova-relay watchdog >> $HOME/.nova-relay/run/watchdog.log 2>&1
+*/5 * * * * $HOME/.local/bin/nova-relay watchdog
 ```
+
+**watchdog 自己写日志**：每次运行向 `<home>/run/watchdog.log`（默认 `~/.nova-relay/run/watchdog.log`，或 `--log PATH`）追加一行 JSON（`ts`、`ok`、`unreachable`、`result`；出错时 `ok: false` 与 `error`）。超过 5 MB 时在文件锁内轮转为 `watchdog.log.1`（只保留一代，不截断唯一的一份），权限 0600；多个 watchdog 同时追加、同时轮转都不会丢行。非终端（cron / systemd）运行时成功结果不打印到 stdout，所以上面的 cron 行**不要**再加 `>> …/watchdog.log`（旧写法：不轮转、无限增长，且会与内置日志重复）；只有配置无法加载这类早期错误会写到 stderr（cron 会邮件或记到 syslog，systemd 记到 journal）。从旧的 cron 写法升级：改掉 crontab 里的重定向即可，已有的 `watchdog.log` 会被继续使用、改为 0600 并按大小轮转。手动在终端运行或加 `--json` 时照常打印结果。
 
 ## 3. 密钥
 
@@ -69,6 +71,7 @@ DEEPSEEK_API_KEY=<key>
 ```bash
 nova-relay doctor
 nova-relay doctor --live # 可选：实查 codex 登录方式（必须是 ChatGPT 订阅）与 DeepSeek key
-nova-relay watchdog      # 手动跑一次，看 hosts.box：reachable / unreachable_since / resume 结果
+nova-relay watchdog      # 手动跑一次，看 hosts.box：reachable / unreachable_since / resume 结果（同时追加到 run/watchdog.log）
+tail -n 3 ~/.nova-relay/run/watchdog.log   # 定时器的历次结果
 nova-relay outbox        # 有无积压/死信
 ```

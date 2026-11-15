@@ -37,6 +37,7 @@
 | `max_log_bytes` | 2 MiB | 每段日志上限 |
 | `max_parallel` | 2 | 每执行者并发任务数（每台主机只有一个 worker 进程，由主机租约保证） |
 | `notify_cooldown_minutes` | 60 | 同一事故的唤醒合并窗口：同一批次里多个任务因**同一执行者级原因**被 `blocked`（CLI 参数、模型 id、守卫失效、严格隔离不可用、磁盘）或因网络反复失败而升级，只唤醒一次；同一主机对同一批次的 `<host>_unreachable` 两次通知之间至少隔这么久（链路抖动不会每次都唤醒）。第一次唤醒总是立即发出 |
+| `contract_cache_ttl_sec` | 3600 | CLI 契约检查（`--version` / `--help`）通过后结果复用多久（见下文"CLI 契约缓存"）。只影响是否重新启动这两个检查进程，不代表登录，也不节省模型调用或额度 |
 
 ## `executors.<name>`
 
@@ -75,7 +76,11 @@
 | pi | 在临时目录安装 pi 1.5.2（`@earendil-works/pi-coding-agent`），用本地模拟的 DeepSeek 接口（`~/.pi/agent/models.json` 覆盖 `baseUrl`）端到端实跑适配器构造的完整命令：扩展被加载并写出 `guard-loaded`，模型发起的 `git push origin main` 被拦下并生成审批，普通命令照常执行；去掉 `--no-extensions --no-approve` 时，全局与仓库 `.pi/extensions` 下的扩展都会被加载（能改写已放行的命令），加上后都不加载；无效 key 时输出 `401: {…authentication_error…}`（归类为 auth） | ✅ 已实机验证（用真实 DeepSeek key 的实跑 🟡） |
 | deepseek | DeepSeek 官方 API：`POST /chat/completions`、`GET /user/balance`、`GET /models`（`doctor --live` 检查 key 与 `model` 是否在列表里） | 🟡 文档核验；本仓库**没有**用真实 key 核实过任何模型 id，模型名只以你自己的 `doctor --live`（`GET /models`）为准 |
 
-无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查，不满足则任务 `blocked` 并唤醒。通过的结果缓存 1 小时（`run/contract-<执行者>.json`），缓存键 = 解析后的二进制（按执行者环境的 PATH 查找、跟随符号链接后的真实路径、inode、大小、mtime、ctime）+ 检查内容（`min_version`、必需参数、version/help 参数）：换 `bin`、升级二进制、改 `min_version` 或 nova-relay 升级后必需参数变化都会重新检查。缓存命中且是原生二进制时不再启动任何进程；`bin` 是 `#!` 包装脚本（例如 `exec ~/.local/bin/claude.real "$@"`）或无法解析时，仍然每次执行 `--version`，只有版本字符串不变时才跳过 `--help`——包装脚本本身不变不能说明它调用的程序没变。`doctor` 总是完整检查。缓存只说明 CLI 的形状，**不代表已登录**（登录由凭据检查与 `doctor --live` 负责）。
+无论哪种，运行前 preflight 都会对真实安装的 CLI 执行 `--version` ≥ `min_version` 和"`--help` 中包含全部必需参数"的检查，不满足则任务 `blocked` 并唤醒。**CLI 契约缓存**：通过的结果缓存 `limits.contract_cache_ttl_sec` 秒（默认 3600，可按执行者覆盖；`run/contract-<执行者>.json`），缓存键 = 解析后的二进制（按执行者环境的 PATH 查找、跟随符号链接后的真实路径、inode、大小、mtime、ctime）+ 二进制所在目录或上一级目录中最近的 `package.json` 的大小/mtime/ctime（npm 安装：`node_modules/@anthropic-ai/claude-code/{package.json,bin/claude.exe}`）+ 检查内容（`min_version`、必需参数、version/help 参数）：换 `bin`、升级二进制或其 npm 包、改 `min_version` 或 nova-relay 升级后必需参数变化都会重新检查；调小 TTL 立即生效。缓存命中且是原生二进制时不再启动任何进程；`bin` 是 `#!` 包装脚本（例如 `exec ~/.local/bin/claude.real "$@"`）或无法解析时，仍然每次执行 `--version`，只有版本字符串不变时才跳过 `--help`——包装脚本本身不变不能说明它调用的程序没变。
+
+实测（box，2026-11-15，只看文件类型，未读凭据）：`~/.local/bin/claude` 是 160 字节的 bash 包装脚本（`exec claude.real`），走上面的包装脚本路径；`claude.real` 是指向 `~/.local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`（约 292 MB 原生文件）的符号链接。如果把 `bin` 直接指向它，缓存身份就是这个 exe 加旁边包的 `package.json`；正常的包升级会替换它们。
+
+**残留风险（无法消除）**：原生文件和 `package.json` 都没变、但它加载的另一份单独更新的内容（例如旁边的其他文件、下载的组件）变了——缓存看不见。对策只有：TTL 到期、`nova-relay contract-cache --clear`（删除全部 `run/contract-*.json`，下一次 preflight 完整检查）、`doctor`（总是强制完整检查）。手动升级 CLI 后建议执行一次 `contract-cache --clear`。缓存只说明 CLI 的形状，**不代表已登录**（每次 preflight 都单独检查凭据；登录由凭据检查与 `doctor --live` 负责）；中止的检查不写缓存。
 
 ## `isolation`（可选，默认关闭）
 
