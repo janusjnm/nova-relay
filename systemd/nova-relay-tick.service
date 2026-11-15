@@ -3,5 +3,7 @@ Description=nova-relay tick (flush outbox, resume stale tasks, heartbeat, gc)
 
 [Service]
 Type=oneshot
-# Secrets are read by nova-relay itself from ~/.config/nova-relay/secrets.env (0600).
+# Config and secrets are read by nova-relay itself: $NOVA_RELAY_CONFIG / $NOVA_RELAY_SECRETS, else
+# $XDG_CONFIG_HOME/nova-relay/, else ~/.config/nova-relay/ (secrets.env must be 0600). install.sh adds
+# Environment=XDG_CONFIG_HOME=... here when it installed into a non-default XDG_CONFIG_HOME.
 ExecStart=%h/.local/bin/nova-relay tick
